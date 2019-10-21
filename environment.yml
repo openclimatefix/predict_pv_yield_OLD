@@ -1,0 +1,20 @@
+name: sat_image_processing
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python>=3.7
+  - pytest
+  - pytables
+  - pandas
+  - matplotlib
+  - jupyterlab
+  - ipympl  # jupyter-matplotlib
+  - nodejs
+  - xarray
+  - cartopy
+  - rasterio
+  - pytorch
+  - scikit-learn
+  - netcdf4 # required for loading NetCDF4 files!
+  - dask
