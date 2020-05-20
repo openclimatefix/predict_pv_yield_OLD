@@ -4,7 +4,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.utils.validation import check_is_fitted
 from sklearn.base import TransformerMixin
 
-from clearsky import spa_python, haurwitz
+from . clearsky import spa_python, haurwitz
 
 
 class RobustMinMaxScaler(MinMaxScaler):
