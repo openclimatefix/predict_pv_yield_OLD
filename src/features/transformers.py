@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.utils.validation import check_is_fitted
@@ -76,7 +77,7 @@ class RobustMinMaxScaler(MinMaxScaler):
         return super().partial_fit(Xr, y=y)
         
     def transform(self, X):
-        """Scale features of X according to feature_range.
+        """Robustly scale features of X according to feature_range.
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
@@ -89,7 +90,27 @@ class RobustMinMaxScaler(MinMaxScaler):
         """
         check_is_fitted(self)
         Xr = X.clip(self.robust_data_min, self.robust_data_max, axis=1)
-        return super().transform(Xr)
+        Xt = super().transform(Xr)
+        if isinstance(X, pd.DataFrame):
+            Xt = pd.DataFrame(Xt, columns = X.columns, index=X.index)
+        return Xt
+    
+    def inverse_transform(self, X):
+        """Robustly scale features of X according to data_range.
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data that will be transformed.
+            
+        Returns
+        -------
+        Xt : array-like of shape (n_samples, n_features)
+            Transformed data.
+        """
+        Xt = super().inverse_transform(Xr)
+        if isinstance(X, pd.DataFrame):
+            Xt = pd.DataFrame(Xt, columns = X.columns, index=X.index)
+        return Xt
 
     def fit_transform(self, X):
         self.fit(X)
@@ -198,9 +219,7 @@ class ClearskyScalar(TransformerMixin):
     
     
 if __name__=='__main__':
-    
-    import pandas as pd
-    
+        
     N = 40 # number of locations
     P=24 # number of periods
     
