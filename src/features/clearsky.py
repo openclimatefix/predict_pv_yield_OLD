@@ -37,7 +37,7 @@ def haurwitz(apparent_zenith):
     return clearsky_ghi
 
 
-@nb.jit('void(float64[:], float64[:], float64[:], float64[:], float64[:,:,:])', 
+@nb.jit('void(float64[:], float64[:], float64[:], float64[:], float64[:,:])', 
         nopython=True, nogil=True)
 def _solar_position_loop(unixtime, lats, lons, loc_args, out):
     """Modify the array `out` array inplace to input the calculated solar 
@@ -56,8 +56,6 @@ def _solar_position_loop(unixtime, lats, lons, loc_args, out):
     temp = loc_args[2]
     delta_t = loc_args[3]
     atmos_refract = loc_args[4]
-    sst = loc_args[5]
-    esd = loc_args[6]
 
     for i in range(unixtime.shape[0]):
         utime = unixtime[i]
@@ -67,9 +65,7 @@ def _solar_position_loop(unixtime, lats, lons, loc_args, out):
         jce = spa.julian_ephemeris_century(jde)
         jme = spa.julian_ephemeris_millennium(jce)
         R = spa.heliocentric_radius_vector(jme)
-        if esd:
-            out[0, i] = R
-            continue
+
         L = spa.heliocentric_longitude(jme)
         B = spa.heliocentric_latitude(jme)
         Theta = spa.geocentric_longitude(L)
@@ -89,11 +85,7 @@ def _solar_position_loop(unixtime, lats, lons, loc_args, out):
         v = spa.apparent_sidereal_time(v0, delta_psi, epsilon)
         alpha = spa.geocentric_sun_right_ascension(lamd, epsilon, beta)
         delta = spa.geocentric_sun_declination(lamd, epsilon, beta)
-        if sst:
-            out[0, i] = v
-            out[1, i] = alpha
-            out[2, i] = delta
-            continue
+
         m = spa.sun_mean_longitude(jme)
         eot = spa.equation_of_time(m, alpha, delta_psi, epsilon)
         
@@ -114,19 +106,11 @@ def _solar_position_loop(unixtime, lats, lons, loc_args, out):
             delta_e = spa.atmospheric_refraction_correction(pressure, temp, e0, atmos_refract)
             e = spa.topocentric_elevation_angle(e0, delta_e)
             theta = spa.topocentric_zenith_angle(e)
-            theta0 = spa.topocentric_zenith_angle(e0)
-            gamma = spa.topocentric_astronomers_azimuth(H_prime, delta_prime, lat)
-            phi = spa.topocentric_azimuth_angle(gamma)
-            out[i, j, 0] = theta
-            out[i, j, 1] = theta0
-            out[i, j, 2] = e
-            out[i, j, 3] = e0
-            out[i, j, 4] = phi
-            out[i, j, 5] = eot
+            out[i, j] = theta
 
 
 def _solar_position_numba(unixtime, lats, lons, elev, pressure, temp, delta_t,
-                         atmos_refract, numthreads, sst=False, esd=False):
+                         atmos_refract, numthreads):
     """Calculate the solar position using the numba compiled functions
     and multiple threads. Very slow if functions are not numba compiled.
     
@@ -135,19 +119,12 @@ def _solar_position_numba(unixtime, lats, lons, elev, pressure, temp, delta_t,
     Based on  `pvlib.spa.solar_position_numba` function.
     """
     # these args are the same for each thread
-    loc_args = np.array([elev, pressure, temp, delta_t,
-                         atmos_refract, sst, esd])
+    loc_args = np.array([elev, pressure, temp, delta_t, atmos_refract])
 
     # construct dims x ulength array to put the results in
     ulength = unixtime.shape[0]
-    if sst:
-        dims = 3
-    elif esd:
-        dims = 1
-    else:
-        dims = 6
         
-    results = np.zeros((ulength, lats.shape[0], dims), dtype=np.float64)
+    results = np.zeros((ulength, lats.shape[0]), dtype=np.float64)
 
     if unixtime.dtype != np.float64:
         unixtime = unixtime.astype(np.float64)
@@ -251,11 +228,8 @@ def spa_python(times, latitudes, longitudes,
 
     delta_t = delta_t or spa.calculate_deltat(times.year, times.month)
 
-    position_data = _solar_position_numba(unixtime, lats, lons, elev, pressure, 
+    app_zenith = _solar_position_numba(unixtime, lats, lons, elev, pressure, 
                                 temperature, delta_t, atmos_refract, numthreads)
-    (app_zenith, zenith, app_elevation, 
-     elevation, azimuth, eot) = position_data.transpose((2,0,1))
-
     return app_zenith
 
 if __name__=='__main__':
