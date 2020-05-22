@@ -14,6 +14,7 @@ SATELLITE_DATA_PATH = 'satellite/EUMETSAT/SEVIRI_RSS/reprojected/just_UK'
 PV_DATA_FILENAME = 'PV/PVOutput.org/UK_PV_timeseries_batch.nc'
 PV_METADATA_FILENAME = 'PV/PVOutput.org/UK_PV_metadata.csv'
 LOCAL_DATA_DIRECTORY = '/home/davidjamesfulton93/repos/predict_pv_yield/data'
+SATELLITE_FILE_PATTERN = os.path.expanduser('~/repos/predict_pv_yield/data/projected_eumetsat/*/*/*.nc')
 
 # default parameters
 # size of satellite patch in kilometers (ad also pixels as 1km/pix)

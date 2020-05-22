@@ -126,3 +126,4 @@ dmypy.json
 # User defined
 ## files writen out from notebook
 tmp/
+data/

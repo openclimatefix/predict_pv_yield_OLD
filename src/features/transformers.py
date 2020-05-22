@@ -139,7 +139,7 @@ class ClearskyScalar(TransformerMixin):
     
     See also
     --------
-    sclearsky.spa_python: Function used to calculate GHI.
+    clearsky.spa_python: Function used to calculate GHI.
     
     Notes
     -----
