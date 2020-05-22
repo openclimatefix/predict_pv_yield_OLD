@@ -1,9 +1,5 @@
 import os
 from glob import glob
-import time
-
-from datetime import timedelta
-from itertools import product
 
 import xarray as xr
 import pandas as pd
@@ -11,13 +7,6 @@ import numpy as np
 
 from torch.utils.data import Dataset
 import rasterio.warp as rasteriowarp
-
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-
-import pvlib
-from pvlib.location import Location
-
 
 # data locations
 GCP_BUCKET = "solar-pv-nowcasting-data"
