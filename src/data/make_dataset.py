@@ -87,6 +87,13 @@ class SatelliteLoader(Dataset):
             Useful so that we don't have to re-open the DataArray if we're asked to get
             data from the same file on several different calls.
     """
+    # These values for July only data
+    HRVMAX = 103.32494
+    MRVMEDIAN = 12.876617
+    HRVMIN = -0.2079
+    HRVMEAN = 14.23
+    HRVSTD = 12.876
+    
     def __init__(self, file_pattern=SATELLITE_FILE_PATTERN, 
                 width=DEFAULT_RECTANGLE_WIDTH,
                 height=DEFAULT_RECTANGLE_HEIGHT):
@@ -126,13 +133,7 @@ class SatelliteLoader(Dataset):
         sat_index = pd.DataFrame(sat_index, columns=['filename', 'datetime']).set_index('datetime').squeeze()
         self.paths = sat_index.tz_localize('UTC')
         self.index = self.paths.index
-        
-    def get_rectangles_for_all_data(self, centre_x, centre_y):
-        """Iterate through all satellite filenames and load rectangle of imagery."""
-        sat_filenames = np.sort(np.unique(self.paths.values))
-        for sat_filename in sat_filenames:
-            data_array = xr.open_dataarray(sat_filename)
-            yield get_rectangle(data_array, time, centre_x, centre_y, self.width, self.height)
+
         
     def get_rectangle(self, time, centre_x, centre_y):
         data_array = self[time]
@@ -145,9 +146,11 @@ class SatelliteLoader(Dataset):
         east = centre_x + half_width
         west = centre_x - half_width
 
-        return data_array.sel(
-            x=slice(west, east), 
-            y=slice(north, south))
+        return self.process(data_array.sel(x=slice(west, east), 
+                                           y=slice(north, south)))
+    
+    def process(self, x):
+        return (x - self.HRVMEAN) / self.HRVSTD
 
 
 if __name__=='__main__':
