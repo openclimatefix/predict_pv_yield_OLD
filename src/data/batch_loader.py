@@ -45,8 +45,8 @@ class cross_processor_batch:
 
     Attributes
     ----------
-    exposure : float
-        Exposure in seconds.
+    cpu_superbatch : dict of numpy.array
+    gpu_superbatch : dict of numpy.array, only if `gpu` is True.
 
     Methods
     -------
@@ -95,36 +95,39 @@ class cross_processor_batch:
 
         # Initiate these indices for looping through and loading the data
         self.batch_index = -1
-        self.superbatch_index = 0
+        self.superbatch_index = -1
         self.epoch = 0
         self.datetime_index = 0
         self.y_index = 0
+        self.extinguished = False
 
         self._instantiate_superbatch('cpu')
         if self.gpu: self._instantiate_superbatch('gpu')
             
             
-    def next(self):
+    def __next__(self):
         """Return the next batch of data and load a new superbatch if 
         required"""
         
-        self.batch_index += 1
-        
-        # load if very first batch or we have already looped though loaded data
-        load_required = self.batch_index == self.superbatch_index == 0
-        load_required = (load_required or (
-            self.batch_index == self.batches_per_superbatch
-        ))
+        if self.extinguished:
+            raise StopIteration
             
+        self.batch_index += 1
+
+        # load if very first batch or we have already looped though loaded data
+        first_item = (self.batch_index -1) == self.superbatch_index == -1
+        load_required = (first_item or (
+            self.batch_index >= self.batches_per_superbatch
+        ))
+        
+        none_greater = lambda x, y: (y is not None) and x>=y
         if load_required:
             # Stop iteration if
             # if the number of epochs has reached it's limit or
             # if the number of superbatches has reached it's limit
-            if self.epochs==self.n_epochs:
-                raise StopIteration
-            elif ((self.n_epochs is None) and 
-                  (self.superbatch_index==self.n_superbatches)
-                 ):
+            if (none_greater(self.epoch, self.n_epochs) or 
+                none_greater(self.superbatch_index+1, self.n_superbatches)):
+                self.extinguished = True
                 raise StopIteration
             
             # load more data otherwise
@@ -133,10 +136,12 @@ class cross_processor_batch:
                 self.transfer_superbatch_to_gpu()
             self.batch_index = 0
 
-        which = 'gpu' if self.gpu else 'cpu'
-        batch = self.return_batch(self.batch_index, which)
+        batch = self.return_batch(self.batch_index, gpu=self.gpu)
         
         return batch
+    
+    def __iter__(self):
+            return self
     
     def _instantiate_superbatch(self, where):
         """Instantiate space for data in memory"""
@@ -144,7 +149,7 @@ class cross_processor_batch:
             if where=='gpu':
                 return torch.full(size=size, 
                                   fill_value=0., 
-                                  dtype=torch.float32, 
+                                  dtype=torch.float16, 
                                   device='cuda')
             elif where=='cpu':
                 return np.full(shape=size, 
@@ -284,11 +289,11 @@ class cross_processor_batch:
                 print('Problem with', k)
                 raise
     
-    def return_batch(self, batch_index, which):
-        if which=='cpu':
+    def return_batch(self, batch_index, gpu=False):
+        if gpu:
+            superbatch = self.gpu_superbatch
+        else:
             superbatch = self.cpu_superbatch
-        elif which=='gpu':
-                superbatch = self.cpu_superbatch
         i1 = batch_index*self.batch_size
         i2 = i1 + self.batch_size
         dict_view = {k:v[i1:i2] for k, v in superbatch.items()}
