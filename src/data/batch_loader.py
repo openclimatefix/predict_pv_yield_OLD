@@ -60,6 +60,7 @@ class cross_processor_batch:
                  n_superbatches=1, n_epochs=None, 
                  gpu=False,
                  shuffle_datetime=True,
+                 method='fast',
                 ):
         
         # make sure we only keep datetimes where we have all data
@@ -71,6 +72,8 @@ class cross_processor_batch:
         if shuffle_datetime: datetime = shuffle(datetime)
         if len(datetime)==0:
             raise ValueError('Data sources do not overlap in time')
+            
+        assert np.all(y_meta.index == y.columns), "metadata doesn't match y"
             
         self.shuffle_datetime = shuffle_datetime
         self.datetime = datetime
@@ -91,6 +94,7 @@ class cross_processor_batch:
         self.n_superbatches = n_superbatches
         self.n_epochs = n_epochs
         self.gpu = gpu
+        self.method = method
         
 
         # Initiate these indices for looping through and loading the data
@@ -185,7 +189,8 @@ class cross_processor_batch:
     def load_next_superbatch_to_cpu(self):
         if not hasattr(self, '_load_next_superbatch_to_cpu'):
             # generate numba function for fast loading
-            self._load_next_superbatch_to_cpu = self._cpu_load_function_factory()
+            self._load_next_superbatch_to_cpu = self._cpu_load_function_factory(
+                        method=self.method)
 
         day_fraction_in = ((self.datetime.hour.values +
                             self.datetime.minute.values/60)
@@ -221,10 +226,18 @@ class cross_processor_batch:
         self.shuffle_cpu_superbatch()
         return
         
-    def _cpu_load_function_factory(self):
+    def _cpu_load_function_factory(self, method='fast'):
         """generates numba function which loads data much faster than
         the base python."""
+        assert method in ['fast', 'random'], 'method parameter not valid'
         is_sat = np.int32(self.satellite_loader is not None)
+        
+        shuffled_index = np.array(
+                    np.meshgrid(np.arange(self.y.shape[0]), 
+                    np.arange(self.y.shape[1]))
+        )
+        shuffled_index = shuffle(shuffled_index.reshape((2, -1)).T) \
+                                               .reshape(self.y.shape+(2,))
         
         def get_sat(i,j):
             return self.satellite_loader.get_rectangle(self.datetime[i], 
@@ -237,7 +250,7 @@ class cross_processor_batch:
                             float32[:,:,:,:], int32,
                             int32, int32, int32)""", 
                 nopython=True, nogil=True)
-        def numba_data_gather(y_in, y_out, 
+        def fast_numba_data_gather(y_in, y_out, 
               clearsky_in, clearsky_out, 
               day_fraction_in, day_fraction_out,
               satellite_image_out, is_sat,
@@ -276,8 +289,59 @@ class cross_processor_batch:
                     completed_new = 1-int(np.any(np.isnan(sat)))
 
             return np.array([i,j, int(newepoch)], dtype=np.int32)
+        
+        
+        @nb.jit("""int32[:](float32[:,:], float32[:,:],
+                            float32[:,:], float32[:,:],
+                            float32[:], float32[:,:],
+                            float32[:,:,:,:], int32,
+                            int32, int32, int32)""", 
+                nopython=True, nogil=True)
+        def random_numba_data_gather(y_in, y_out, 
+              clearsky_in, clearsky_out, 
+              day_fraction_in, day_fraction_out,
+              satellite_image_out, is_sat,
+              superbatch_size, i, j):
 
-        return numba_data_gather
+            newepoch = 0
+            for n in range(superbatch_size):
+
+                completed_new=0
+                while completed_new==0:
+
+                    # loop through to find non-NaN y
+                    found_new = 0
+                    while found_new==0:
+                        j+=1
+                        if j==y_in.shape[1]:
+                            j=0
+                            i+=1
+                        if i==y_in.shape[1]:
+                            i=0
+                            newepoch += 1
+                        ind0, ind1 = shuffled_index[i,j]
+                        y_val = y_in[ind0, ind1]
+                        found_new = 1-int(np.isnan(y_val))
+
+                    y_out[n] = y_val
+                    clearsky_out[n] = clearsky_in[ind0, ind1]
+                    day_fraction_out[n] = day_fraction_in[ind0]
+
+                    if is_sat:
+                        with objmode(sat='float32[:,:]'):
+                                sat = get_sat(ind0, ind1)
+
+                        satellite_image_out[n] = sat
+
+                    # sat data sometimes has NaNs. Check for this
+                    completed_new = 1-int(np.any(np.isnan(sat)))
+
+            return np.array([i,j, int(newepoch)], dtype=np.int32)
+        
+        if method=='fast':
+            return fast_numba_data_gather
+        elif method=='random':
+            return random_numba_data_gather
             
     def transfer_superbatch_to_gpu(self):
         if not self.gpu:
