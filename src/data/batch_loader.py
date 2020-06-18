@@ -4,6 +4,24 @@ from numba import njit, objmode
 import numpy as np
 import torch
 
+import pvlib
+from pvlib.location import Location
+
+
+def compute_clearsky(times, latitudes, longitudes):
+    clearsky = np.full(shape=(len(times), len(latitudes), 3), fill_value=np.NaN, dtype=np.float32)
+
+    
+    for i, (lat, lon) in enumerate(zip(lat, lon)):
+        loc = Location(
+                latitude=lat,
+                longitude=lon,
+                tz='UTC').get_clearsky(times)
+        clearsky[:,i,:] = clearsky_for_location.values    
+    
+    return clearsky
+
+
 class cross_processor_batch:
     """
     A superbatch data generator object for CPU or GPU.

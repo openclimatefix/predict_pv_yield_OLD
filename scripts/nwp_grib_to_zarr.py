@@ -21,10 +21,10 @@ import time
 fs = gcsfs.GCSFileSystem(project='solar-pv-nowcasting', token=None)
 
 # bucket and save path
-gcssavepath = 'solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV_zarr'
+gcssavepath = 'solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV_zarr/test'
 
 # filepattern to load from
-gcsloadpaths = ['solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV/2018/07/0[1-2]/']#[8-9]/[0-1][0-9]/[0-3][0-9]/']
+gcsloadpaths = ['solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV/2019/07/01']
 
 # create new zarr store or otherwise append
 create_new = True
@@ -130,12 +130,26 @@ print('loading from : ', load_directories)
 ################################################################################
 # function library
 ################################################################################
+def adhoc_merge(datasets, filepattern):
+    """File structures are heterogenious across time. 
+    This function is to try to fix some of that to 2018-07 which is
+    the file structure I was working with first
+    """
+    if 1 in datasets.keys():
+        # identify change by cfgrib extra splitting behaviour
+        # before file strucuture change [t, r, dpt, vis] are all at index 0
+        if list(datasets[1][0].keys())==['t'] and list(datasets[1][1].keys())==['r', 'dpt', 'vis']:
+            datasets[1][0] = cfgrib.open_dataset(filepattern.format(1), backend_kwargs=dict(filter_by_keys={'level': 1}))
+            for i in range(1, len(datasets[1])-1):
+                datasets[1][i] = datasets[1][i+1]
+    return datasets
 
 def load_wholesale_gribs_to_xarray(filepattern, channels):
         
     #  load in all the wholesale filenumbers needed
     cfgrib.dataset.LOG.disabled = True
     datasets = {i:cfgrib.open_datasets(filepattern.format(i)) for i in load_filenumbers}
+    datasets = adhoc_merge(datasets, filepattern)
     cfgrib.dataset.LOG.disabled = False
         
     # rename channels from grib names to unique short names
