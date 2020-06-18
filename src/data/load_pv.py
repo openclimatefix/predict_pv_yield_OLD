@@ -6,7 +6,7 @@ import rasterio.warp as rasteriowarp
 
 import os
 
-from . constants import GCP_BUCKET, LOCAL_DATA_DIRECTORY
+LOCAL_DATA_DIRECTORY = os.path.expanduser('~/OCFdata')
 PV_DATA_FILEPATH = 'PV/PVOutput.org/UK_PV_timeseries_batch.nc'
 PV_METADATA_FILEPATH = 'PV/PVOutput.org/UK_PV_metadata.csv'
 
@@ -15,7 +15,7 @@ DST_CRS = 'EPSG:27700'
 WEST=-239_000
 SOUTH=-185_000
 EAST=857_000
-NORTH=1223_000 
+NORTH=1223_000
 
 def load_pv_metadata(filepath=None):
     if filepath is None:

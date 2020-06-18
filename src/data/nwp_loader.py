@@ -84,6 +84,8 @@ import xarray as xr
 import pandas as pd
 import numpy as np
 
+import gcsfs
+
 from torch.utils.data import Dataset
 
 from . constants import GCP_FS
