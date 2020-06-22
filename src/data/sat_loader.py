@@ -1,7 +1,5 @@
 ## TO DO
 # - look into pytorch Dataset class to improve loader
-# - Do some precomputing to means and standard deviations on different variables
-#     - incorporate the above into standard preprocessing
 
 import xarray as xr
 import pandas as pd
@@ -14,7 +12,11 @@ from torch.utils.data import Dataset
 from . constants import GCP_FS
 
 SATELLITE_ZARR_PATH = 'solar-pv-nowcasting-data/satellite/EUMETSAT/SEVIRI_RSS/OSGB36/zarr'
+SATELLITE_AGG_PATH = 'solar-pv-nowcasting-data/satellite/EUMETSAT/SEVIRI_RSS/OSGB36/aggregate'
+
 SATELLITE_STORE = gcsfs.mapping.GCSMap(SATELLITE_ZARR_PATH, gcs=GCP_FS, 
+                                       check=True, create=False)
+SATELLITE_AGG_STORE = gcsfs.mapping.GCSMap(SATELLITE_AGG_PATH, gcs=GCP_FS, 
                                        check=True, create=False)
  
 AVAILABLE_CHANNELS = ['HRV', 'IR_016', 'IR_039','IR_087', 'IR_097', 'IR_108', 
@@ -24,20 +26,19 @@ class SatelliteLoader(Dataset):
     """
 
     """
-    # These values for July only data
-    HRVMAX = 103.32494
-    MRVMEDIAN = 12.876617
-    HRVMIN = -0.2079
-    HRVMEAN = 14.23
-    HRVSTD = 12.876
-
     
     def __init__(self, 
                  store=SATELLITE_STORE, 
                  width=22000,
                  height=22000,
-                 channels=AVAILABLE_CHANNELS):
-
+                 channels=AVAILABLE_CHANNELS,
+                 preprocess_method='norm'):
+        
+        if preprocess_method not in [None, 'norm', 'minmax', 'log_norm', 'log_minmax']:
+            raise ValueError('Selected preprocess_method not valid')
+        if len(set(channels)-set(AVAILABLE_CHANNELS))!=0:
+            raise ValueError('Selected channel list not available')
+        
         self.channels = channels
         self.dataset = xr.open_zarr(store=store, consolidated=True) \
                          .sel(variable=channels, y=slice(None, None, -1)) \
@@ -48,6 +49,10 @@ class SatelliteLoader(Dataset):
         self.datset = self.dataset.sortby('time')
         self.width = width
         self.height = height
+        self.preprocess_method = preprocess_method
+        if preprocess_method is not None:
+            self._agg_stats = xr.open_zarr(store=SATELLITE_AGG_STORE, 
+                                           consolidated=True)[channels].load()
     
     def close(self):
         self.dataset.close()
@@ -67,7 +72,7 @@ class SatelliteLoader(Dataset):
         east = centre_x + half_width
         west = centre_x - half_width
 
-        rectangle = self.process(self.dataset.sel(time=time, 
+        rectangle = self.preprocess(self.dataset.sel(time=time, 
                                            x=slice(west, east), 
                                            y=slice(south, north)))
         return rectangle
@@ -77,7 +82,25 @@ class SatelliteLoader(Dataset):
         ds = self.get_rectangle(time, centre_x, centre_y)
         return ds.stacked_eumetsat_data.values
     
-    def process(self, x):
+    def preprocess(self, x):
+        if self.preprocess_method=='norm':
+            x = ((x - self._agg_stats.sel(aggregate_statistic='mean')) / 
+                     self._agg_stats.sel(aggregate_statistic='std')
+                )
+        elif self.preprocess_method=='minmax':
+            x = ((x - self._agg_stats.sel(aggregate_statistic='min')) / 
+                     (self._agg_stats.sel(aggregate_statistic='max') - 
+                      self._agg_stats.sel(aggregate_statistic='min'))
+                 )
+        elif self.preprocess_method=='log_norm':
+            x = np.log(x - self._agg_stats.sel(aggregate_statistic='min')+1)
+            x = ((x - self._agg_stats.sel(aggregate_statistic='mean_log')) / 
+                     self._agg_stats.sel(aggregate_statistic='std_log')
+                )
+        elif self.preprocess_method=='log_minmax':
+            x = np.log(x - self._agg_stats.sel(aggregate_statistic='min')+1)
+            # note that min_log is 0 using our log transform above
+            x = x  / self._agg_stats.sel(aggregate_statistic='max_log')
         return x
     
 

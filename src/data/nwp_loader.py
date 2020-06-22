@@ -1,84 +1,6 @@
-"""
-Loader for UKV numerical weather forecasts
-
-When loaded using cfgrib the following variables are available at each index 
-from each file
-    # wholesale 1
-    # index 0 - [heightAboveGround = 1]
-    't' # 1.5m air temperature at surface
-    'r' # 1.5m Relative humidity
-    'dpt' # 1.5m dew point temperature
-    'vis' # 1.5m visibility
-    
-    # index 1 - [heightAboveGround = 10]
-    'si10' # 10m wind speed
-    'wdir10' # 10m wind direction
-    
-    # index 2 - [meanSea = 0]
-    'prmsl' # mean sea level pressure
-    
-    # index 3 - [surface = 0]
-    'paramId_0' # original GRIB paramId: 0 # Uncertain. This is likely "1.5m 
-                                           # fog probability"
-        
-    # index 4 - [surface = 0]
-    'paramId_0' # original GRIB paramId: 0 # Uncertain. This is likely "snow 
-                                           # fraction"
-    'prate' # total precipitation rate 
-    
-    #---------------------------------------
-    # wholesale 2
-    # index 0 - [atmosphere = 0]
-    'paramId_0' # original GRIB paramId: 0 # Uncertain. This might be 
-                                           # "cloud fraction below 1000ft ASL"
-    
-    # index 1 - [cloudBase = 0]
-    'cdcb' # Cloud base
-    
-    # index 2 - [heightAboveGroundLayer = 0]
-    'lcc' # Low cloud cover
-    
-    # index 3 - [heightAboveGroundLayer = 1524]
-    'mcc' # Medium cloud cover
-        
-    # index 4 - [heightAboveGroundLayer = 4572]
-    'hcc' # High cloud cover
-    
-    # index 5 [surface = 0]
-    'paramId_0' # original GRIB paramId: 0 # Uncertain. This might be "wet/dry 
-                                           # bulb freezing level height"
-    'sde' # Snow depth
-    'hcct' # Height of convective cloud top
-    'dswrf' # Downward short-wave radiation flux
-    'dlwrf' # Downward long-wave radiation flux
-    
-    # index 6 - [level = 0]
-    'h' # Geometrical height
-    
-    #---------------------------------------
-    # wholesale 3
-    # index 0 - [isobaricInhPa (15,) = 1000 925 850 700 600 ... 100 70 50 30]
-    'ws' # Wind speed
-    't' # Temperature
-    'gh' # Geopotential Height
-    'r' # Relative humidity
-    'wdir' # Wind direction
-    
-    #---------------------------------------
-    # wholesale 4
-    # index 0 - [heightAboveGround = 10]
-    'gust' # 10m wind gust
-
-    # index 1 - [heightAboveGround = 10]
-    'gust' # 10m maximum wind gust in hour (T+1 to T+36)
-
-"""
-
 ## TO DO
 # - Fix loader so variables at different pressure levels can be used
 # - look into pytorch Dataset class to improve loader
-# - Do some precomputing to means and standard deviations on different variables
-#     - incorporate the above into standard preprocessing
 
 import xarray as xr
 import pandas as pd
@@ -91,7 +13,11 @@ from torch.utils.data import Dataset
 from . constants import GCP_FS
 
 NWP_ZARR_PATH = 'solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV_zarr/2019_1-6'
+NWP_AGG_PATH = 'solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV_zarr/aggregate'
+
 NWP_STORE = gcsfs.mapping.GCSMap(NWP_ZARR_PATH, gcs=GCP_FS, 
+                                       check=True, create=False)
+NWP_AGG_STORE = gcsfs.mapping.GCSMap(NWP_AGG_PATH, gcs=GCP_FS, 
                                        check=True, create=False)
 
 _channels_meta_data = pd.DataFrame(
@@ -158,7 +84,12 @@ class NWPLoader(Dataset):
                  width=22000,
                  height=22000,
                  channels=DEFAULT_CHANNELS,
-                 lazy_load=True):
+                 preprocess_method='norm'):
+        
+        if preprocess_method not in [None, 'norm', 'minmax', 'log_norm', 'log_minmax']:
+            raise ValueError('Selected preprocess_method not valid')
+        if len(set(channels)-set(AVAILABLE_CHANNELS.index))!=0:
+            raise ValueError('Selected channel list not available')
 
         self.channels = channels
         drop_variables = set(_channels_meta_data.index) - set(channels)
@@ -168,6 +99,11 @@ class NWPLoader(Dataset):
         self.datset = self.dataset.sortby('time')
         self.width = width
         self.height = height
+        
+        self.preprocess_method = preprocess_method
+        if preprocess_method is not None:
+            self._agg_stats = xr.open_zarr(store=NWP_AGG_STORE, 
+                                           consolidated=True)[channels].load()
     
     def close(self):
         self.dataset.close()
@@ -181,7 +117,7 @@ class NWPLoader(Dataset):
         forecast_time = pd.Timestamp(forecast_time).floor('180min').to_pydatetime()
         
         # check forecast in range of data
-        forecast_dt = np.datetime64(t)
+        forecast_dt = np.datetime64(forecast_time)
         valid_dt = np.datetime64(valid_time)
         step = valid_dt - forecast_dt
         if (step > np.timedelta64(36, 'h')) or (step < np.timedelta64(0, 'h')):
@@ -196,7 +132,7 @@ class NWPLoader(Dataset):
         east = centre_x + half_width
         west = centre_x - half_width
 
-        rectangle = self.process(
+        rectangle = self.preprocess(
                         self.dataset.sel(time=forecast_time, 
                                          step=step,
                                          x=slice(west, east), 
@@ -208,7 +144,25 @@ class NWPLoader(Dataset):
         ds = self.get_rectangle(forecast_time, valid_time, centre_x, centre_y)
         return ds.to_array().values
     
-    def process(self, x):
+    def preprocess(self, x):
+        if self.preprocess_method=='norm':
+            x = ((x - self._agg_stats.sel(aggregate_statistic='mean')) / 
+                     self._agg_stats.sel(aggregate_statistic='std')
+                )
+        elif self.preprocess_method=='minmax':
+            x = ((x - self._agg_stats.sel(aggregate_statistic='min')) / 
+                     (self._agg_stats.sel(aggregate_statistic='max') - 
+                      self._agg_stats.sel(aggregate_statistic='min'))
+                 )
+        elif self.preprocess_method=='log_norm':
+            x = np.log(x - self._agg_stats.sel(aggregate_statistic='min')+1)
+            x = ((x - self._agg_stats.sel(aggregate_statistic='mean_log')) / 
+                     self._agg_stats.sel(aggregate_statistic='std_log')
+                )
+        elif self.preprocess_method=='log_minmax':
+            x = np.log(x - self._agg_stats.sel(aggregate_statistic='min')+1)
+            # note that min_log is 0 using our log transform above
+            x = x  / self._agg_stats.sel(aggregate_statistic='max_log')
         return x
     
 
