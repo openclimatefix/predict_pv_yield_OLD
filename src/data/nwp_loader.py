@@ -90,6 +90,8 @@ class NWPLoader(Dataset):
             raise ValueError('Selected preprocess_method not valid')
         if len(set(channels)-set(AVAILABLE_CHANNELS.index))!=0:
             raise ValueError('Selected channel list not available')
+        if width%2000!=0 or height%2000!=0:
+            raise ValueError("Grid spacing is 2000m so height and width should be multiple of this")
 
         self.channels = channels
         drop_variables = set(_channels_meta_data.index) - set(channels)
@@ -104,6 +106,11 @@ class NWPLoader(Dataset):
         if preprocess_method is not None:
             self._agg_stats = xr.open_zarr(store=NWP_AGG_STORE, 
                                            consolidated=True)[channels].load()
+            
+    @property
+    def sample_shape(self):
+        """(channels,y,x,(time,))"""
+        return (len(self.channels), self.height//2000, self.width//2000, 1)
     
     def close(self):
         self.dataset.close()
@@ -115,12 +122,10 @@ class NWPLoader(Dataset):
         # select first forecast time before selected time
         # frecasts are 3-hourly
         forecast_time = pd.Timestamp(forecast_time).floor('180min').to_pydatetime()
-        
+        valid_time = pd.Timestamp(valid_time).floor('60min').to_pydatetime()
         # check forecast in range of data
-        forecast_dt = np.datetime64(forecast_time)
-        valid_dt = np.datetime64(valid_time)
-        step = valid_dt - forecast_dt
-        if (step > np.timedelta64(36, 'h')) or (step < np.timedelta64(0, 'h')):
+        step = valid_time - forecast_time
+        if (step > pd.Timedelta('37h')) or (step < pd.Timedelta('0h')):
             raise ValueError(f'valid_time {step} ahead of forecast_time')
         
         # convert from km to m

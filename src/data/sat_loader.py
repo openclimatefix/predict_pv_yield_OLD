@@ -38,6 +38,8 @@ class SatelliteLoader(Dataset):
             raise ValueError('Selected preprocess_method not valid')
         if len(set(channels)-set(AVAILABLE_CHANNELS))!=0:
             raise ValueError('Selected channel list not available')
+        if width%2000!=0 or height%2000!=0:
+            raise ValueError("Grid spacing is 2000m so height and width should be multiple of this")
         
         self.channels = channels
         self.dataset = xr.open_zarr(store=store, consolidated=True) \
@@ -53,6 +55,11 @@ class SatelliteLoader(Dataset):
         if preprocess_method is not None:
             self._agg_stats = xr.open_zarr(store=SATELLITE_AGG_STORE, 
                                            consolidated=True)[channels].load()
+            
+    @property
+    def sample_shape(self):
+        """(channels, y, x, time)"""
+        return (len(self.channels), self.height//2000, self.width//2000, 1)
     
     def close(self):
         self.dataset.close()

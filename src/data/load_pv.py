@@ -10,7 +10,7 @@ LOCAL_DATA_DIRECTORY = os.path.expanduser('~/OCFdata')
 PV_DATA_FILEPATH = 'PV/PVOutput.org/UK_PV_timeseries_batch.nc'
 PV_METADATA_FILEPATH = 'PV/PVOutput.org/UK_PV_metadata.csv'
 
-# Coordinate system of the SEVIRI & UKV data
+# Coordinate system of the SEVIRI OSGB36 reprojected & UKV data
 DST_CRS = 'EPSG:27700'
 WEST=-239_000
 SOUTH=-185_000
@@ -58,6 +58,9 @@ def load_pv_power(filepath=None, start='2010-12-15', end='2019-08-20'):
     pv_power_df = pv_power_df.reindex(sorted(pv_power_df.columns), axis=1)
     
     return pv_power_df
+
+if __name__=='__main__':
+    
 
 
 
