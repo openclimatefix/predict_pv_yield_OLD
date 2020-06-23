@@ -1,6 +1,7 @@
 ## TO DO
 # - Fix loader so variables at different pressure levels can be used
 # - look into pytorch Dataset class to improve loader
+# - do caching to improve load speed
 
 import xarray as xr
 import pandas as pd
@@ -106,6 +107,8 @@ class NWPLoader(Dataset):
         if preprocess_method is not None:
             self._agg_stats = xr.open_zarr(store=NWP_AGG_STORE, 
                                            consolidated=True)[channels].load()
+        self._cache = None
+        self._cache_dates = [None, None]
             
     @property
     def sample_shape(self):

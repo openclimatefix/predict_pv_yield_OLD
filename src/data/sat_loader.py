@@ -54,7 +54,7 @@ class SatelliteLoader(Dataset):
         self.preprocess_method = preprocess_method
         if preprocess_method is not None:
             self._agg_stats = xr.open_zarr(store=SATELLITE_AGG_STORE, 
-                                           consolidated=True)[channels].load()
+                                consolidated=True).sel(variable=channels).load()
             
     @property
     def sample_shape(self):

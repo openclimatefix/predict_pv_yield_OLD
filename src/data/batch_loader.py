@@ -39,18 +39,18 @@ def data_source_intersection(pv_output, clearsky=None, sat_loader=None, nwp_load
     if nwp_loader is not None:
         nwp_times = nwp_loader.dataset.time.values
         forecast_time = pd.to_datetime(intersect_times - lead_time)
-        _, ind, _ = np.intersect1d(forecast_time.floor('180min'), 
-                                   nwp_loader.dataset.time, return_indices=True)
-        intersect_times = intersect_times[ind]
+        in_nwp = np.in1d(forecast_time.floor('180min'), nwp_times)
+        intersect_times = intersect_times[in_nwp]
         
-    return intersect_times
+    return pd.DatetimeIndex(intersect_times)
 
 @nb.jit()
-def shuffled_indexes_for_pv(pv_output_values, consec_samples_per_datetime):
+def _shuffled_indexes_for_pv(pv_output_values, consec_samples_per_datetime):
     """
     Parameters
     ----------
-    pv_output_values : array_like 
+    pv_output_values : array_like,
+        The pv-output values
     consec_samples_per_datetime: int
         number of samples per each datetime row. Value -1 means take all pv 
         systems fotr each randomly selected datetime. 
@@ -69,11 +69,11 @@ def shuffled_indexes_for_pv(pv_output_values, consec_samples_per_datetime):
                 row.append((i,j))
                 
         if len(row)>0:
-            row = [row[i] for i in np.random.permutation(np.arange(len(row)))]
+            row = [row[k] for k in np.random.permutation(np.arange(len(row)))]
             if consec_samples_per_datetime==-1: n = len(row)
             rowchunks.extend([row[m:m+n] for m in range(0,len(row), n)])
     
-    rowchunks = [rowchunks[i] for i in np.random.permutation(np.arange(len(rowchunks)))]
+    rowchunks = [rowchunks[k] for k in np.random.permutation(np.arange(len(rowchunks)))]
     
     indexes = []
     for rowchunk in rowchunks:
@@ -101,7 +101,7 @@ class cross_processor_batch:
     clearsky : pandas.DataFrame, optional
         Clearsky GHI data for each time and position as the data from the 
         systems in `y`.
-    satellite_loader : sat_loader.SatelliteLoader, optional
+    sat_loader : sat_loader.SatelliteLoader, optional
         Satellite image loader object which returns data with any required
         preprocessing already implemented.
     nwp_loader : nwp_loader.NWPLoader, optional
@@ -134,7 +134,7 @@ class cross_processor_batch:
     """
     def __init__(self, y, y_meta, 
                  clearsky=None,
-                 satellite_loader=None,
+                 sat_loader=None,
                  nwp_loader=None,
                  lead_time=pd.Timedelta('0min'),
                  batch_size=256, batches_per_superbatch=16, 
@@ -143,29 +143,30 @@ class cross_processor_batch:
                  consec_samples_per_datetime=10,
                 ):
         
+        # remove UTC timezone info
+        y.index = y.index.values
+        
         # make sure we only keep datetimes where we have all data
-        datetime = data_source_intersection(pv_output, clearsky=clearsky,
-                                            sat_loader=satellite_loader, 
+        datetime = data_source_intersection(y, clearsky=clearsky,
+                                            sat_loader=sat_loader, 
                                             nwp_loader=nwp_loader, 
                                             lead_time=lead_time)
         if len(datetime)==0:
             raise ValueError('Data sources do not overlap in time')
-            
-        assert np.all(y_meta.index == y.columns), "metadata doesn't match y"
-            
+                        
         self.datetime = datetime
         self.lead_time = lead_time
         
         # store datasets
-        self.y = y.reindex(datetime).astype(np.float32)
-        self.y_meta = y_meta
+        self.y = y.reindex(datetime).astype(np.float32).dropna(axis=0, how='all')
+        self.y_meta = y_meta.reindex(y.columns)
         if clearsky is None:
             self.clearsky = None
         else:
             self.clearsky = clearsky.reindex(datetime).astype(np.float32)
         
         # store loaders
-        self.satellite_loader = satellite_loader
+        self.sat_loader = sat_loader
         self.nwp_loader = nwp_loader
         
         # store options
@@ -181,7 +182,7 @@ class cross_processor_batch:
         self.superbatch_index = -1
         self.epoch = 0
         self.consec_samples_per_datetime = consec_samples_per_datetime
-        self.indexes = shuffled_indexes_for_pv(self.y.values, 
+        self.indexes = _shuffled_indexes_for_pv(self.y.values, 
                                                consec_samples_per_datetime)
         self.index_number = 0
         self.extinguished = False
@@ -220,7 +221,7 @@ class cross_processor_batch:
             
             # if we have reached the end of an epoch then reshuffle
             if self.reshuffle_required:
-                self.indexes = shuffled_indexes_for_pv(self.y.values, 
+                self.indexes = _shuffled_indexes_for_pv(self.y.values, 
                                                self.consec_samples_per_datetime)
                 self.index_number = 0
             
@@ -253,12 +254,12 @@ class cross_processor_batch:
         superbatch['y'] = new_array((self.superbatch_size, 1))
         superbatch['day_fraction'] =  new_array((self.superbatch_size, 1))
         
-        if self.clearksy is not None:
+        if self.clearsky is not None:
             superbatch['clearsky'] = new_array((self.superbatch_size, 1))
         
-        if self.satellite_loader is not None:
+        if self.sat_loader is not None:
             superbatch['satellite'] = new_array((self.superbatch_size,) 
-                                        + self.satellite_loader.sample_shape
+                                        + self.sat_loader.sample_shape
             )
         if self.nwp_loader is not None:
             superbatch['nwp'] = new_array((self.superbatch_size,) 
@@ -280,8 +281,7 @@ class cross_processor_batch:
     def load_next_superbatch_to_cpu(self):
         if not hasattr(self, '_load_next_superbatch_to_cpu'):
             # generate numba function for fast loading
-            self._load_next_superbatch_to_cpu = self._cpu_load_function_factory(
-                        method=self.method)
+            self._load_next_superbatch_to_cpu = self._cpu_load_function_factory()
 
         day_fraction_in = ((self.datetime.hour.values +
                             self.datetime.minute.values/60)
@@ -296,7 +296,7 @@ class cross_processor_batch:
             clearsky_in = clearsky_out = np.empty((0,0), dtype=np.float32)
         
         # if including satellite imagery
-        is_sat = np.int32(self.satellite_loader is not None)
+        is_sat = np.int32(self.sat_loader is not None)
         if is_sat:
             satellite_image_out = self.cpu_superbatch['satellite']
         else:
@@ -311,7 +311,7 @@ class cross_processor_batch:
 
         args = [self.y.values, # y_in
                 self.cpu_superbatch['y'], # y_out
-                is_cs, # include clearksy
+                is_cs, # include clearsky
                 clearsky_in, 
                 clearsky_out,
                 day_fraction_in, 
@@ -344,24 +344,24 @@ class cross_processor_batch:
         def get_sat(i,j):
             dt = pd.Timestamp(self.datetime[i])-self.lead_time
             dt = dt.floor('5min') - pd.Timedelta('1min')
-            return self.satellite_loader.get_rectangle_array(dt
+            return self.sat_loader.get_rectangle_array(dt,
                                 *self.y_meta.loc[self.y.columns[j]][['x', 'y']]
-                                ).values.astype(np.float32)
+                                ).astype(np.float32)[..., np.newaxis]
         
         def get_nwp(i,j):
             dt = pd.Timestamp(self.datetime[i])-self.lead_time
             return self.nwp_loader.get_rectangle_array(dt, self.datetime[i], 
                                 *self.y_meta.loc[self.y.columns[j]][['x', 'y']]
-                                ).values.astype(np.float32)
+                                ).astype(np.float32)[..., np.newaxis]
         
-
-        @nb.jit("""int32[:](float32[:,:], float32[:,:],
-                            int32, float32[:,:], float32[:,:],
-                            float32[:], float32[:,:],
-                            int32, float32[:,:,:,:,:],
-                            int32, float32[:,:,:,:,:],
-                            int32, int32, float32[:,:])""", 
-                nopython=True, nogil=True)
+        # since recent change jit wrapping this makes no difference to speed
+        #@nb.jit("""int32[:](float32[:,:], float32[:,:],
+        #                    int32, float32[:,:], float32[:,:],
+        #                    float32[:], float32[:,:],
+        #                    int32, float32[:,:,:,:,:],
+        #                    int32, float32[:,:,:,:,:],
+        #                    int32, int32, int32[:,:])""", 
+        #        nopython=True, nogil=True)
         def numba_data_gather(y_in, y_out, 
                               is_cs, clearsky_in, clearsky_out, 
                               day_fraction_in, day_fraction_out,
@@ -371,7 +371,6 @@ class cross_processor_batch:
 
             newepoch = 0
             for n in range(superbatch_size):
-
                 completed_new=0
                 while completed_new==0:
                     i, j = indexes[index_n]
@@ -383,19 +382,25 @@ class cross_processor_batch:
                         clearsky_out[n] = clearsky_in[i, j]
                     
                     if is_sat:
-                        with objmode(sat='float32[:,:,:]'):
+                        with objmode(sat='float32[:,:,:,:]'):
                                 sat = get_sat(i,j)
-                        satellite_image_out[n] = sat
                         
                     if is_nwp:
-                        with objmode(nwp='float32[:,:,:]'):
+                        with objmode(nwp='float32[:,:,:,:]'):
                                 nwp = get_sat(i,j)
-                        nwp_image_out[n] = nwp
-
+                        
                     # sat data sometimes has NaNs. Check for this
                     completed_new = 1-int(np.any(np.isnan(sat)) or 
                                           np.any(np.isnan(nwp)))
                     
+                    # check that sat and nwp returned data
+                    completed_new -= int(satellite_image_out[n].shape!=sat.shape
+                                         or nwp_image_out[n].shape!=nwp.shape)
+                    
+                    if completed_new:
+                        satellite_image_out[n] = sat
+                        nwp_image_out[n] = nwp
+                                        
                     index_n+=1
                     if index_n>=len(indexes):
                         index_n = 0
@@ -427,4 +432,3 @@ class cross_processor_batch:
         i2 = i1 + self.batch_size
         dict_view = {k:v[i1:i2] for k, v in superbatch.items()}
         return dict_view
-    

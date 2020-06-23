@@ -60,6 +60,10 @@ def load_pv_power(filepath=None, start='2010-12-15', end='2019-08-20'):
     return pv_power_df
 
 if __name__=='__main__':
+    pv_output = load_pv_power("~/repos/predict_pv_yield/data/"+PV_DATA_FILEPATH, 
+                              start='2018-01-01', 
+                              end='2019-12-31')
+    pv_metadata = load_pv_metadata("~/repos/predict_pv_yield/data/"+PV_METADATA_FILEPATH)
     
 
 
