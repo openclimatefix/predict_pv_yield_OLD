@@ -56,6 +56,9 @@ class SatelliteLoader(Dataset):
             self._agg_stats = xr.open_zarr(store=SATELLITE_AGG_STORE, 
                                 consolidated=True).sel(variable=channels).load()
             
+        self._cache = None
+        self._cache_date = None
+            
     @property
     def sample_shape(self):
         """(channels, y, x, time)"""
@@ -79,9 +82,15 @@ class SatelliteLoader(Dataset):
         east = centre_x + half_width
         west = centre_x - half_width
 
-        rectangle = self.preprocess(self.dataset.sel(time=time, 
-                                           x=slice(west, east), 
-                                           y=slice(south, north)))
+        # cache to speed up loading same datetime
+        if time!=self._cache_date:
+            #print('cache not used')
+            self._cache = self.dataset.sel(time=time).load()
+            self._cache_date = time
+
+        rectangle = self._cache.sel(y=slice(south, north), 
+                                    x=slice(west, east))
+        rectangle = self.preprocess(rectangle)
         return rectangle
     
     def get_rectangle_array(self, time, centre_x, centre_y):

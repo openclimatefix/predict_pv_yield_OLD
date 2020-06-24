@@ -1,3 +1,6 @@
+# TO DO
+# - parallelise this loader
+
 from sklearn.utils import shuffle
 import numba as nb
 from numba import njit, objmode

@@ -1,7 +1,6 @@
 ## TO DO
 # - Fix loader so variables at different pressure levels can be used
 # - look into pytorch Dataset class to improve loader
-# - do caching to improve load speed
 
 import xarray as xr
 import pandas as pd
@@ -139,12 +138,16 @@ class NWPLoader(Dataset):
         south = centre_y - half_height
         east = centre_x + half_width
         west = centre_x - half_width
-
-        rectangle = self.preprocess(
-                        self.dataset.sel(time=forecast_time, 
-                                         step=step,
-                                         x=slice(west, east), 
-                                         y=slice(south, north)))
+        
+        # cache to speed up loading on same datetime
+        if [forecast_time, step]!=self._cache_dates:
+            self._cache = self.dataset.sel(time=forecast_time, step=step).load()
+            self._cache_dates = [forecast_time, step]
+            
+        rectangle = self.preprocess(self._cache.sel(
+                                        y=slice(south, north), 
+                                        x=slice(west, east)
+                                  ))
         return rectangle
     
     def get_rectangle_array(self, forecast_time, valid_time, centre_x, centre_y):
