@@ -1,11 +1,15 @@
 # TO DO
 # - parallelise this loader
+# * check out https://numba.pydata.org/numba-doc/latest/user/examples.html#multi-threading
 
 from sklearn.utils import shuffle
 import numba as nb
 from numba import njit, objmode
 import numpy as np
 import torch
+import threading
+from multiprocessing import Value
+import copy
 
 import pvlib
 from pvlib.location import Location
@@ -72,20 +76,22 @@ def _shuffled_indexes_for_pv(pv_output_values, consec_samples_per_datetime):
                 row.append((i,j))
                 
         if len(row)>0:
+            # shuffle row
             row = [row[k] for k in np.random.permutation(np.arange(len(row)))]
             if consec_samples_per_datetime==-1: n = len(row)
-            rowchunks.extend([row[m:m+n] for m in range(0,len(row), n)])
+            rowchunks.extend([row[m:m+n] for m in range(0, len(row), n)])
     
+    # shuffle the order of the same-time-different-pv-system chunks
     rowchunks = [rowchunks[k] for k in np.random.permutation(np.arange(len(rowchunks)))]
     
-    indexes = []
-    for rowchunk in rowchunks:
-        for ind in rowchunk:
-            indexes.append(ind)
+    # fill with value so can be converted to numpy array
+    for i, rc in enumerate(rowchunks):
+        if consec_samples_per_datetime==-1: n = j_max
+        rowchunks[i] = rc+[(-1,-1)]*(n-len(rc))
         
-    return np.array(indexes, dtype=np.int32)
+    return np.array(rowchunks, dtype=np.int32)
 
-
+    
 class cross_processor_batch:
     """
     A superbatch data generator object for CPU or GPU.
@@ -144,6 +150,7 @@ class cross_processor_batch:
                  n_superbatches=1, n_epochs=None, 
                  gpu=False,
                  consec_samples_per_datetime=10,
+                 parallel_loading_cores = 2,
                 ):
         
         # remove UTC timezone info
@@ -190,7 +197,15 @@ class cross_processor_batch:
         self.index_number = 0
         self.extinguished = False
         self.reshuffle_required = False
-
+        self.parallel_loading_cores = parallel_loading_cores
+        # Make loader copies for parallel loading
+        # This makes better use of caching for speed
+        self._parallel_loading_cache = {i:{
+                'nwp_loader': nwp_loader if i==0 else copy.deepcopy(nwp_loader),
+                'sat_loader': sat_loader if i==0 else copy.deepcopy(sat_loader),
+                'thread_current_index':-1,
+                'thread_subindex':-1
+            } for i in range(self.parallel_loading_cores)}
         self._instantiate_superbatch('cpu')
         if self.gpu: self._instantiate_superbatch('gpu')
             
@@ -282,139 +297,131 @@ class cross_processor_batch:
                 np.random.shuffle(self.cpu_superbatch[key])
     
     def load_next_superbatch_to_cpu(self):
-        if not hasattr(self, '_load_next_superbatch_to_cpu'):
-            # generate numba function for fast loading
-            self._load_next_superbatch_to_cpu = self._cpu_load_function_factory()
+        
+        # share this value between threads
+        index_n = Value('i', self.index_number)
+        
+        # store whether we run over end of data
+        newepoch = Value('i', 0)
 
-        day_fraction_in = ((self.datetime.hour.values +
-                            self.datetime.minute.values/60)
-                           /24).astype(np.float32)
-        
-        #if including clearsky
-        is_cs = np.int32(self.clearsky is not None)
-        if is_cs:
-            clearsky_in = self.clearsky.values
-            clearsky_out = self.cpu_superbatch['clearsky']
-        else:
-            clearsky_in = clearsky_out = np.empty((0,0), dtype=np.float32)
-        
-        # if including satellite imagery
-        is_sat = np.int32(self.sat_loader is not None)
-        if is_sat:
-            satellite_image_out = self.cpu_superbatch['satellite']
-        else:
-            satellite_image_out = np.empty((0,0,0,0,0), dtype=np.float32)
+        def single_thread_data_gather(n_start, n_stop, cache_dict):
             
-        # if including nwp data
-        is_nwp = np.int32(self.nwp_loader is not None)
-        if is_nwp:
-            nwp_image_out = self.cpu_superbatch['satellite']
+            thread_current_index = cache_dict['thread_current_index']
+            thread_subindex = cache_dict['thread_subindex']
+            sat_loader = cache_dict['sat_loader']
+            nwp_loader = cache_dict['nwp_loader']
+            
+            
+            
+            # if first use of this function get an initial index
+            if thread_current_index==-1:
+                with index_n.get_lock():
+                    thread_current_index = index_n.value
+                    index_n.value += 1
+                thread_subindex = 0
+                
+            
+            for n in range(n_start, n_stop):
+                
+                # loop until we find valid sample
+                completed_new=False
+                while not completed_new:
+                    
+                    # assume this next sample will be okay for now
+                    completed_new = True
+                    
+                    i, j = self.indexes[thread_current_index, thread_subindex]
+                    
+                    # To make array regular shaped nan values were filled with
+                    # -1. Nan values always occur at end of index rows
+                    if i==j==-1:
+                        with index_n.get_lock():
+                            thread_current_index = index_n.value
+                            index_n.value += 1
+                        thread_subindex = 0
+                    
+                    self.cpu_superbatch['y'][n] = self.y.values[i, j]
+                    day_frac = lambda x: ((x.hour+x.minute/60)/24.)
+                    self.cpu_superbatch['day_fraction'][n] = day_frac(self.datetime[i])
+                    
+                    if self.clearsky is not None:
+                        self.cpu_superbatch['clearsky'][n] = self.clearsky.values[i, j]
+                    
+                    dt = pd.Timestamp(self.datetime[i])-self.lead_time
+                    
+                    if self.sat_loader is not None:
+                        sat = sat_loader.get_rectangle_array(
+                                dt.floor('5min') - pd.Timedelta('1min'),
+                                *self.y_meta.loc[self.y.columns[j]][['x', 'y']]
+                                ).astype(np.float32)[..., np.newaxis]
+                        # check for nans and shape
+                        completed_new = (completed_new and 
+                            not np.any(np.isnan(sat)) and 
+                            self.cpu_superbatch['satellite'][n].shape==sat.shape
+                        )
+                    
+                    if self.nwp_loader is not None:
+                        nwp = nwp_loader.get_rectangle_array(dt, self.datetime[i], 
+                                *self.y_meta.loc[self.y.columns[j]][['x', 'y']]
+                                ).astype(np.float32)[..., np.newaxis]
+                        # check for nans and shape
+                        completed_new = (completed_new and 
+                            not np.any(np.isnan(nwp)) and 
+                            self.cpu_superbatch['nwp'][n].shape==nwp.shape
+                        )
+                    
+                    if completed_new:
+                        self.cpu_superbatch['satellite'][n] = sat
+                        self.cpu_superbatch['nwp'][n] = nwp
+                    
+                    # update thread indices and global next index
+                    thread_subindex+=1
+                    if thread_subindex>=self.indexes.shape[1]:
+                        with index_n.get_lock():
+                            thread_current_index = index_n.value
+                            index_n.value += 1
+                            if index_n.value >= self.indexes.shape[0]:
+                                index_n.value = 0
+                                newepoch.value += 1
+                        thread_subindex = 0
+                        
+            # store the current loading location
+            cache_dict['thread_current_index'] = thread_current_index
+            cache_dict['thread_subindex'] = thread_subindex
+            
+            return
+        
+        if self.parallel_loading_cores>1:
+        
+            sample_nums = np.linspace(0, self.superbatch_size, 
+                                      self.parallel_loading_cores+1).astype(int)
+
+            chunk_args = [[sample_nums[i], sample_nums[i+1], cache_dict] 
+                                  for i, cache_dict in self._parallel_loading_cache.items()]
+
+            # Spawn one thread per chunk
+            threads = [threading.Thread(target=single_thread_data_gather, args=args)
+                                   for args in chunk_args]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        
         else:
-            nwp_image_out = np.empty((0,0,0,0,0), dtype=np.float32)
-
-        args = [self.y.values, # y_in
-                self.cpu_superbatch['y'], # y_out
-                is_cs, # include clearsky
-                clearsky_in, 
-                clearsky_out,
-                day_fraction_in, 
-                self.cpu_superbatch['day_fraction'], # day_fraction_out
-                is_sat, # include sat
-                satellite_image_out, 
-                is_nwp, # include NWP
-                nwp_image_out, 
-                np.int32(self.superbatch_size), 
-                np.int32(self.index_number),
-                self.indexes]
-
-        # load data
-        out = self._load_next_superbatch_to_cpu(*args)
+            single_thread_data_gather(0, self.superbatch_size, 
+                                      self._parallel_loading_cache[0])
 
         # store where we loaded up to
-        self.index_number, newepoch = out
-        self.epoch += newepoch
+        self.index_number = index_n.value
+        self.epoch += newepoch.value
+        
         # delay reshuffling in case we have hit epoch limit
-        if newepoch >0:
+        if newepoch.value >0:
             self.reshuffle_required = True
         self.superbatch_index+=1
         self.shuffle_cpu_superbatch()
         return
-        
-    def _cpu_load_function_factory(self):
-        """generates numba function which loads data much faster than
-        the base python."""
-                
-        def get_sat(i,j):
-            dt = pd.Timestamp(self.datetime[i])-self.lead_time
-            dt = dt.floor('5min') - pd.Timedelta('1min')
-            return self.sat_loader.get_rectangle_array(dt,
-                                *self.y_meta.loc[self.y.columns[j]][['x', 'y']]
-                                ).astype(np.float32)[..., np.newaxis]
-        
-        def get_nwp(i,j):
-            dt = pd.Timestamp(self.datetime[i])-self.lead_time
-            return self.nwp_loader.get_rectangle_array(dt, self.datetime[i], 
-                                *self.y_meta.loc[self.y.columns[j]][['x', 'y']]
-                                ).astype(np.float32)[..., np.newaxis]
-        
-        # since recent change jit wrapping this makes no difference to speed
-        #@nb.jit("""int32[:](float32[:,:], float32[:,:],
-        #                    int32, float32[:,:], float32[:,:],
-        #                    float32[:], float32[:,:],
-        #                    int32, float32[:,:,:,:,:],
-        #                    int32, float32[:,:,:,:,:],
-        #                    int32, int32, int32[:,:])""", 
-        #        nopython=True, nogil=True)
-        def numba_data_gather(y_in, y_out, 
-                              is_cs, clearsky_in, clearsky_out, 
-                              day_fraction_in, day_fraction_out,
-                              is_sat, satellite_image_out, 
-                              is_nwp, nwp_image_out,
-                              superbatch_size, index_n, indexes):
-
-            newepoch = 0
-            for n in range(superbatch_size):
-                completed_new=0
-                while completed_new==0:
-                    i, j = indexes[index_n]
-                    
-                    y_out[n] = y_in[i, j]
-                    day_fraction_out[n] = day_fraction_in[i]
-                    
-                    if is_cs:
-                        clearsky_out[n] = clearsky_in[i, j]
-                    
-                    if is_sat:
-                        with objmode(sat='float32[:,:,:,:]'):
-                                sat = get_sat(i,j)
-                        
-                    if is_nwp:
-                        with objmode(nwp='float32[:,:,:,:]'):
-                                nwp = get_sat(i,j)
-                        
-                    # sat data sometimes has NaNs. Check for this
-                    completed_new = 1-int(np.any(np.isnan(sat)) or 
-                                          np.any(np.isnan(nwp)))
-                    
-                    # check that sat and nwp returned data
-                    completed_new -= int(satellite_image_out[n].shape!=sat.shape
-                                         or nwp_image_out[n].shape!=nwp.shape)
-                    
-                    if completed_new:
-                        satellite_image_out[n] = sat
-                        nwp_image_out[n] = nwp
-                                        
-                    index_n+=1
-                    if index_n>=len(indexes):
-                        index_n = 0
-                        newepoch+=1
-                    if newepoch>=2:
-                        raise Exception('Not enough data for superbatch size')
-
-            return np.array([index_n, int(newepoch)], dtype=np.int32)
-        
-        return numba_data_gather
-        
+    
 
     def transfer_superbatch_to_gpu(self):
         if not self.gpu:
@@ -423,8 +430,7 @@ class cross_processor_batch:
             try:
                 self.gpu_superbatch[k].copy_(torch.HalfTensor(v))
             except:
-                print('Problem with', k)
-                raise
+                raise Exception('Problem with', k)
     
     def return_batch(self, batch_index, gpu=False):
         if gpu:

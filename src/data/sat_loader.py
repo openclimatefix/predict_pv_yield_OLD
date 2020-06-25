@@ -84,7 +84,6 @@ class SatelliteLoader(Dataset):
 
         # cache to speed up loading same datetime
         if time!=self._cache_date:
-            #print('cache not used')
             self._cache = self.dataset.sel(time=time).load()
             self._cache_date = time
 
