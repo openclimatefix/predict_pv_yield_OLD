@@ -141,6 +141,16 @@ class cross_processor_batch:
     next()
         Generate the next batch of data and load a new superbatch if required.
     """
+    # slots for faster attribute access
+    # on speed test this contributes maybe 2% speedup
+    __slots__ = ['datetime', 'lead_time', 'y', 'y_meta', 'clearsky', 
+              'sat_loader','nwp_loader', 'batch_size', 'batches_per_superbatch', 
+              'superbatch_size','n_superbatches', 'n_epochs', 'gpu', 
+              'batch_index','superbatch_index', 'epoch', 
+              'consec_samples_per_datetime', 'indexes', 'index_number',
+              'extinguished', 'reshuffle_required', 'parallel_loading_cores', 
+              '_parallel_loading_cache', 'cpu_superbatch', 'gpu_superbatch']
+    
     def __init__(self, y, y_meta, 
                  clearsky=None,
                  sat_loader=None,
