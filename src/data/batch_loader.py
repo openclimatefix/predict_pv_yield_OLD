@@ -1,22 +1,25 @@
 # TO DO
-# - parallelise this loader
-# * check out https://numba.pydata.org/numba-doc/latest/user/examples.html#multi-threading
+# many fields in NWP data have same value over huge area. Take single values 
+# rather than rectangular patch.
 
-from sklearn.utils import shuffle
-import numba as nb
-from numba import njit, objmode
 import numpy as np
+import pandas as pd
+import numba as nb
+
 import torch
-import threading
-from multiprocessing import Value
 import copy
+from sklearn.utils import shuffle
 
 import pvlib
 from pvlib.location import Location
 
+import threading
+from multiprocessing import Value
+
 
 def compute_clearsky(times, latitudes, longitudes):
-    clearsky = np.full(shape=(len(times), len(latitudes), 3), fill_value=np.NaN, dtype=np.float32)
+    clearsky = np.full(shape=(len(times), len(latitudes), 3), 
+                       fill_value=np.NaN, dtype=np.float32)
 
     
     for i, (lat, lon) in enumerate(zip(lat, lon)):
@@ -349,13 +352,20 @@ class cross_processor_batch:
                             thread_current_index = index_n.value
                             index_n.value += 1
                         thread_subindex = 0
+                        completed_new = False
+                        continue
+                        
                     
                     self.cpu_superbatch['y'][n] = self.y.values[i, j]
                     day_frac = lambda x: ((x.hour+x.minute/60)/24.)
                     self.cpu_superbatch['day_fraction'][n] = day_frac(self.datetime[i])
                     
                     if self.clearsky is not None:
-                        self.cpu_superbatch['clearsky'][n] = self.clearsky.values[i, j]
+                        if np.isnan(self.clearsky.values[i, j]):
+                            completed_new = False
+                            continue
+                        else:
+                            self.cpu_superbatch['clearsky'][n] = self.clearsky.values[i, j]
                     
                     dt = pd.Timestamp(self.datetime[i])-self.lead_time
                     
@@ -369,6 +379,7 @@ class cross_processor_batch:
                             not np.any(np.isnan(sat)) and 
                             self.cpu_superbatch['satellite'][n].shape==sat.shape
                         )
+                        if not completed_new: continue
                     
                     if self.nwp_loader is not None:
                         nwp = nwp_loader.get_rectangle_array(dt, self.datetime[i], 
@@ -379,10 +390,10 @@ class cross_processor_batch:
                             not np.any(np.isnan(nwp)) and 
                             self.cpu_superbatch['nwp'][n].shape==nwp.shape
                         )
+                        if not completed_new: continue
                     
-                    if completed_new:
-                        self.cpu_superbatch['satellite'][n] = sat
-                        self.cpu_superbatch['nwp'][n] = nwp
+                    self.cpu_superbatch['satellite'][n] = sat
+                    self.cpu_superbatch['nwp'][n] = nwp
                     
                     # update thread indices and global next index
                     thread_subindex+=1
