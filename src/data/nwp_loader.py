@@ -1,6 +1,7 @@
 ## TO DO
 # - Fix loader so variables at different pressure levels can be used
 # - look into pytorch Dataset class to improve loader
+# - Easier support for signle point values instead of rectangular patch
 
 import xarray as xr
 import pandas as pd

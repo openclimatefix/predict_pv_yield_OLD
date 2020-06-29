@@ -19,7 +19,7 @@ NORTH=1223_000
 
 def load_pv_metadata(filepath=None):
     if filepath is None:
-        filepath = os.path.join(LOCAL_DATA_DIRECTORY, PV_METADATA_FILENAME)
+        filepath = os.path.join(LOCAL_DATA_DIRECTORY, PV_METADATA_FILEPATH)
         
     pv_metadata = pd.read_csv(filepath, index_col='system_id')
     pv_metadata.dropna(subset=['longitude', 'latitude'], how='any', inplace=True)
@@ -44,7 +44,7 @@ def load_pv_metadata(filepath=None):
 
 def load_pv_power(filepath=None, start='2010-12-15', end='2019-08-20'):
     if filepath is None:
-        filepath = os.path.join(LOCAL_DATA_DIRECTORY, PV_DATA_FILENAME)
+        filepath = os.path.join(LOCAL_DATA_DIRECTORY, PV_DATA_FILEPATH)
         
     pv_power_df = xr.open_dataset(filepath) \
                     .loc[dict(datetime=slice(start, end))] \
@@ -61,12 +61,5 @@ def load_pv_power(filepath=None, start='2010-12-15', end='2019-08-20'):
 
 if __name__=='__main__':
     pv_output = load_pv_power("~/repos/predict_pv_yield/data/"+PV_DATA_FILEPATH, 
-                              start='2018-01-01', 
-                              end='2019-12-31')
+                              start='2018-01-01', end='2019-12-31')
     pv_metadata = load_pv_metadata("~/repos/predict_pv_yield/data/"+PV_METADATA_FILEPATH)
-    
-
-
-
-
-
