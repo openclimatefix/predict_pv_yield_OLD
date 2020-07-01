@@ -181,7 +181,7 @@ class cross_processor_batch:
         self.lead_time = lead_time
         
         # store datasets
-        self.y = y.reindex(datetime).astype(np.float32).dropna(axis=0, how='all')
+        self.y = y.reindex(datetime).astype(np.float32)
         self.y_meta = y_meta.reindex(y.columns)
         if clearsky is None:
             self.clearsky = None
@@ -379,7 +379,10 @@ class cross_processor_batch:
                             not np.any(np.isnan(sat)) and 
                             self.cpu_superbatch['satellite'][n].shape==sat.shape
                         )
-                        if not completed_new: continue
+                        if not completed_new: 
+                            continue
+                        else:
+                            self.cpu_superbatch['satellite'][n] = sat
                     
                     if self.nwp_loader is not None:
                         nwp = nwp_loader.get_rectangle_array(dt, self.datetime[i], 
@@ -390,10 +393,10 @@ class cross_processor_batch:
                             not np.any(np.isnan(nwp)) and 
                             self.cpu_superbatch['nwp'][n].shape==nwp.shape
                         )
-                        if not completed_new: continue
-                    
-                    self.cpu_superbatch['satellite'][n] = sat
-                    self.cpu_superbatch['nwp'][n] = nwp
+                        if not completed_new: 
+                            continue
+                        else:
+                            self.cpu_superbatch['nwp'][n] = nwp
                     
                     # update thread indices and global next index
                     thread_subindex+=1
