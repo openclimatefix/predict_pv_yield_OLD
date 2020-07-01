@@ -13,15 +13,17 @@ from torch.utils.data import Dataset
 
 from . constants import GCP_FS
 
-NWP_ZARR_PATH = 'solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV_zarr/2019_1-6'
+NWP_ZARR_PATHS = ['solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV_zarr/{}'.format(d) 
+                  for d in ['2018_1-6','2018_7-12','2019_1-6','2019_7-12']]
 NWP_AGG_PATH = 'solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV_zarr/aggregate'
 
-NWP_STORE = gcsfs.mapping.GCSMap(NWP_ZARR_PATH, gcs=GCP_FS, 
-                                       check=True, create=False)
+NWP_STORES = [gcsfs.mapping.GCSMap(NWP_ZARR_PATH, gcs=GCP_FS, 
+                                       check=True, create=False) 
+              for NWP_ZARR_PATH in NWP_ZARR_PATHS]
 NWP_AGG_STORE = gcsfs.mapping.GCSMap(NWP_AGG_PATH, gcs=GCP_FS, 
                                        check=True, create=False)
 
-_channels_meta_data = pd.DataFrame(
+AVAILABLE_CHANNELS = pd.DataFrame(
     {'channel_name': [
         't', 'r', 'dpt', 'vis', 'si10', 'wdir10', 'prmsl', 'unknown_1', 
         'unknown_2', 'prate', 'unknown_3', 'cdcb', 'lcc', 'mcc', 'hcc', 
@@ -58,20 +60,9 @@ _channels_meta_data = pd.DataFrame(
         '10m wind gust',
         '10m maximum wind gust in hour (T+1 to T+36)',
      ],
-     'wholesale_file_number': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 
-                               2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4],
-     'index_after_loading': [0, 0, 0, 0, 1, 1, 2, 3, 4, 4, 0, 1, 2, 3, 4, 5, 5, 
-                             5, 5, 5, 6, 0, 0, 0, 0, 0, 0, 1],
-     'wholesale_file_variable_code':[
-        't', 'r', 'dpt', 'vis', 'si10', 'wdir10', 'prmsl', 'paramId_0', 
-         'paramId_0', 'prate', 'paramId_0', 'cdcb', 'lcc', 'mcc', 'hcc', 
-         'paramId_0', 'sde', 'hcct', 'dswrf', 'dlwrf', 'h', 'ws', 't', 'gh', 
-         'r', 'wdir', 'gust', 'gust'
-     ],
     }
 ).set_index('channel_name', drop=True)
 
-AVAILABLE_CHANNELS = _channels_meta_data.loc[:, ['description']]
 DEFAULT_CHANNELS = ['t', 'dswrf', 'lcc', 'mcc', 'hcc', 'r']
 
 
@@ -81,7 +72,7 @@ class NWPLoader(Dataset):
     """
     
     def __init__(self, 
-                 store=NWP_STORE, 
+                 store='all', 
                  width=22000,
                  height=22000,
                  channels=DEFAULT_CHANNELS,
@@ -95,8 +86,14 @@ class NWPLoader(Dataset):
             raise ValueError("Grid spacing is 2000m so height and width should be multiple of this")
 
         self.channels = channels
-        drop_variables = set(_channels_meta_data.index) - set(channels)
-        self.dataset = xr.open_zarr(store=store,  
+        drop_variables = set(AVAILABLE_CHANNELS.index) - set(channels)
+        if store=='all':
+            NWP_STORES
+            self.dataset = xr.concat([xr.open_zarr(store=s,  
+                                    drop_variables=drop_variables,
+                                    consolidated=True) for s in NWP_STORES], dim='time')[channels]
+        else:
+            self.dataset = xr.open_zarr(store=store,  
                                     drop_variables=drop_variables,
                                     consolidated=True)[channels]
         self.datset = self.dataset.sortby('time')
