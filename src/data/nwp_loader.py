@@ -65,6 +65,9 @@ AVAILABLE_CHANNELS = pd.DataFrame(
 
 DEFAULT_CHANNELS = ['t', 'dswrf', 'lcc', 'mcc', 'hcc', 'r']
 
+def xr_unique(ds):
+    index = np.sort(np.unique(ds.time, return_index=True)[1])
+    return ds.isel(time=index)
 
 class NWPLoader(Dataset):
     """
@@ -89,9 +92,9 @@ class NWPLoader(Dataset):
         drop_variables = set(AVAILABLE_CHANNELS.index) - set(channels)
         if store=='all':
             NWP_STORES
-            self.dataset = xr.concat([xr.open_zarr(store=s,  
+            self.dataset = xr.concat([xr_unique(xr.open_zarr(store=s,  
                                     drop_variables=drop_variables,
-                                    consolidated=True) for s in NWP_STORES], dim='time')[channels]
+                                    consolidated=True)) for s in NWP_STORES], dim='time')[channels]
         else:
             self.dataset = xr.open_zarr(store=store,  
                                     drop_variables=drop_variables,
