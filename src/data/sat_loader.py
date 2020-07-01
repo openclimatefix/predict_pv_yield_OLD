@@ -11,7 +11,7 @@ from torch.utils.data import Dataset
 
 from . constants import GCP_FS
 
-SATELLITE_ZARR_PATH = 'solar-pv-nowcasting-data/satellite/EUMETSAT/SEVIRI_RSS/OSGB36/zarr'
+SATELLITE_ZARR_PATH = 'solar-pv-nowcasting-data/satellite/EUMETSAT/SEVIRI_RSS/OSGB36/all_zarr'
 SATELLITE_AGG_PATH = 'solar-pv-nowcasting-data/satellite/EUMETSAT/SEVIRI_RSS/OSGB36/aggregate'
 
 SATELLITE_STORE = gcsfs.mapping.GCSMap(SATELLITE_ZARR_PATH, gcs=GCP_FS, 
@@ -42,13 +42,11 @@ class SatelliteLoader(Dataset):
             raise ValueError("Grid spacing is 2000m so height and width should be multiple of this")
         
         self.channels = channels
+        # transforms below are needed to have same dimension order as nwp
         self.dataset = xr.open_zarr(store=store, consolidated=True) \
                          .sel(variable=channels, y=slice(None, None, -1)) \
-                         .transpose('variable', 'time', 'y', 'x')
-        # Note that above the reversing of the y-coord and transposing need to
-        # be reoved once sat_netcdf_to_zarr.py is run again. It was modified to
-        # do these before saving.
-        self.datset = self.dataset.sortby('time')
+                         .transpose('variable', 'time', 'y', 'x') \
+                         .sortby('time')
         self.width = width
         self.height = height
         self.preprocess_method = preprocess_method
