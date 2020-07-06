@@ -15,6 +15,7 @@ from pvlib.location import Location
 
 import threading
 from multiprocessing import Value
+import warnings
 
 
 def compute_clearsky(times, latitudes, longitudes):
@@ -313,60 +314,92 @@ class cross_processor_batch:
         
         # share this value between threads
         index_n = Value('i', self.index_number)
+        # set up value for exiting thread
+        thread_exit = Value('b', False)
+        # keep track of if warned
+        already_warned = Value('b', False)
         
         # store whether we run over end of data
         newepoch = Value('i', 0)
+        
+        def advance_index(thread_current_index, thread_subindex):
+            # update thread indices and global next index
+            thread_subindex+=1
+            if (thread_subindex>=self.indexes.shape[1] 
+                            or thread_current_index==-1):
+                with index_n.get_lock():
+                    thread_current_index = index_n.value
+                    index_n.value += 1
+                    if index_n.value >= self.indexes.shape[0]:
+                        index_n.value = 0
+                        newepoch.value += 1
+                thread_subindex = 0
+            return thread_current_index, thread_subindex
 
         def single_thread_data_gather(n_start, n_stop, cache_dict):
             
+            # unpack cache
             thread_current_index = cache_dict['thread_current_index']
             thread_subindex = cache_dict['thread_subindex']
             sat_loader = cache_dict['sat_loader']
             nwp_loader = cache_dict['nwp_loader']
             
-            
-            
-            # if first use of this function get an initial index
+            # check if first load
             if thread_current_index==-1:
-                with index_n.get_lock():
-                    thread_current_index = index_n.value
-                    index_n.value += 1
-                thread_subindex = 0
-                
+                thread_current_index, thread_subindex = advance_index(
+                    thread_current_index, thread_subindex)
             
             for n in range(n_start, n_stop):
+                 
+                repeats=0 # warn if repeats gets too high
+                completed_new=False # loop until we find valid sample
                 
-                # loop until we find valid sample
-                completed_new=False
                 while not completed_new:
                     
-                    # assume this next sample will be okay for now
+                    #assume this sample will be fine
                     completed_new = True
                     
+                    # allow threads to be interupted
+                    if thread_exit.value: return
+                    
+                    # warn if repeats too high
+                    repeats+=1
+                    if repeats == 20 and not already_warned.value:
+                        warnings.warn(
+                            """
+                            Warning: Number of failed loads for one datapoint
+                            exceeded {}. This may imply a data issue.
+                            
+                            """.format(repeats))
+                        already_warned.value=True
+                                            
                     i, j = self.indexes[thread_current_index, thread_subindex]
                     
                     # To make array regular shaped nan values were filled with
                     # -1. Nan values always occur at end of index rows
                     if i==j==-1:
-                        with index_n.get_lock():
-                            thread_current_index = index_n.value
-                            index_n.value += 1
-                        thread_subindex = 0
+                        thread_current_index, thread_subindex = advance_index(
+                                        thread_current_index, thread_subindex)
                         completed_new = False
                         continue
                         
-                    
                     self.cpu_superbatch['y'][n] = self.y.values[i, j]
                     day_frac = lambda x: ((x.hour+x.minute/60)/24.)
                     self.cpu_superbatch['day_fraction'][n] = day_frac(self.datetime[i])
                     
                     if self.clearsky is not None:
                         if np.isnan(self.clearsky.values[i, j]):
+                            thread_current_index, thread_subindex = (
+                                advance_index(thread_current_index, 
+                                              thread_subindex)
+                            )
                             completed_new = False
                             continue
                         else:
                             self.cpu_superbatch['clearsky'][n] = self.clearsky.values[i, j]
                     
+                    # load sat images and/or nwp from before the time prediction
+                    # is made.
                     dt = pd.Timestamp(self.datetime[i])-self.lead_time
                     
                     if self.sat_loader is not None:
@@ -380,6 +413,10 @@ class cross_processor_batch:
                             self.cpu_superbatch['satellite'][n].shape==sat.shape
                         )
                         if not completed_new: 
+                            thread_current_index, thread_subindex = (
+                                advance_index(thread_current_index, 
+                                              thread_subindex)
+                            )
                             continue
                         else:
                             self.cpu_superbatch['satellite'][n] = sat
@@ -394,20 +431,22 @@ class cross_processor_batch:
                             self.cpu_superbatch['nwp'][n].shape==nwp.shape
                         )
                         if not completed_new: 
+                            thread_current_index, thread_subindex = (
+                                advance_index(thread_current_index, 
+                                              thread_subindex)
+                            )
                             continue
                         else:
                             self.cpu_superbatch['nwp'][n] = nwp
+                            
                     
-                    # update thread indices and global next index
-                    thread_subindex+=1
-                    if thread_subindex>=self.indexes.shape[1]:
-                        with index_n.get_lock():
-                            thread_current_index = index_n.value
-                            index_n.value += 1
-                            if index_n.value >= self.indexes.shape[0]:
-                                index_n.value = 0
-                                newepoch.value += 1
-                        thread_subindex = 0
+                # If it gets to here it will have got a valid sample so 
+                # update the thread indexes and go for the next sample.
+                thread_current_index, thread_subindex = (
+                        advance_index(thread_current_index, thread_subindex)
+                )
+                    
+
                         
             # store the current loading location
             cache_dict['thread_current_index'] = thread_current_index
@@ -416,7 +455,7 @@ class cross_processor_batch:
             return
         
         if self.parallel_loading_cores>1:
-        
+
             sample_nums = np.linspace(0, self.superbatch_size, 
                                       self.parallel_loading_cores+1).astype(int)
 
@@ -426,10 +465,13 @@ class cross_processor_batch:
             # Spawn one thread per chunk
             threads = [threading.Thread(target=single_thread_data_gather, args=args)
                                    for args in chunk_args]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join()
+            try:
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+            finally:
+                thread_exit.value = True
         
         else:
             single_thread_data_gather(0, self.superbatch_size, 
