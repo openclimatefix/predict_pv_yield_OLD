@@ -19,8 +19,37 @@ SATELLITE_STORE = gcsfs.mapping.GCSMap(SATELLITE_ZARR_PATH, gcs=GCP_FS,
 SATELLITE_AGG_STORE = gcsfs.mapping.GCSMap(SATELLITE_AGG_PATH, gcs=GCP_FS, 
                                        check=True, create=False)
  
-AVAILABLE_CHANNELS = ['HRV', 'IR_016', 'IR_039','IR_087', 'IR_097', 'IR_108', 
-                     'IR_120', 'IR_134', 'VIS006', 'VIS008', 'WV_062', 'WV_073']
+# description copied from http://eumetrain.org/data/2/204/204.pdf
+AVAILABLE_CHANNELS = pd.DataFrame({
+    'channel_name':[
+        'VIS006',
+        'VIS008',
+        'IR_016',
+        'IR_039',
+        'WV_062',
+        'WV_073',
+        'IR_087',
+        'IR_097',
+        'IR_108',
+        'IR_120',
+        'IR_134',
+        'HRV'],
+    'description':[
+        'λ_central=0.635µm, λ_min=0.56µm, λ_max=0.71µm, | Main observational purposes : Surface, clouds, wind fields',
+        'λ_central=0.81µm, λ_min=0.74µm, λ_max=0.88µm, | Main observational purposes : Surface, clouds, wind fields',
+        'λ_central=1.64µm, λ_min=1.50µm, λ_max=1.78µm, | Main observational purposes : Surface, cloud phase',
+        'λ_central=3.90µm, λ_min=3.48µm, λ_max=4.36µm, | Main observational purposes : Surface, clouds, wind fields',
+        'λ_central=6.25µm, λ_min=5.35µm, λ_max=7.15µm, | Main observational purposes : Water vapor, high level clouds, upper air analysis',
+        'λ_central=7.35µm, λ_min=6.85µm, λ_max=7.85µm, | Main observational purposes : Water vapor, atmospheric instability, upper-level dynamics',
+        'λ_central=8.70µm, λ_min=8.30µm, λ_max=9.1µm, | Main observational purposes : Surface, clouds, atmospheric instability',
+        'λ_central=9.66µm, λ_min=9.38µm, λ_max=9.94µm, | Main observational purposes : Ozone',
+        'λ_central=10.80µm, λ_min=9.80µm, λ_max=11.80µm, | Main observational purposes : Surface, clouds, wind fields, atmospheric instability',
+        'λ_central=12.00µm, λ_min=11.00µm, λ_max=13.00µm, | Main observational purposes : Surface, clouds, atmospheric instability',
+        'λ_central=13.40µm, λ_min=12.40µm, λ_max=14.40µm, | Main observational purposes : Cirrus cloud height, atmospheric instability',
+        'Broadband (about 0.4 – 1.1 µm) | Main observational purposes : Surface, clouds']
+    }).set_index('channel_name', drop=True)
+
+DEFAULT_CHANNELS = list(AVAILABLE_CHANNELS.index)
 
 class SatelliteLoader(Dataset):
     """
@@ -31,12 +60,12 @@ class SatelliteLoader(Dataset):
                  store=SATELLITE_STORE, 
                  width=22000,
                  height=22000,
-                 channels=AVAILABLE_CHANNELS,
+                 channels=DEFAULT_CHANNELS,
                  preprocess_method='norm'):
         
         if preprocess_method not in [None, 'norm', 'minmax', 'log_norm', 'log_minmax']:
             raise ValueError('Selected preprocess_method not valid')
-        if len(set(channels)-set(AVAILABLE_CHANNELS))!=0:
+        if len(set(channels)-set(AVAILABLE_CHANNELS.index))!=0:
             raise ValueError('Selected channel list not available')
         if width%2000!=0 or height%2000!=0:
             raise ValueError("Grid spacing is 2000m so height and width should be multiple of this")
