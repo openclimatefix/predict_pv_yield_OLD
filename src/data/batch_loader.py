@@ -17,6 +17,10 @@ import threading
 from multiprocessing import Value
 import warnings
 
+from . constants import DST_CRS, NORTH, SOUTH, EAST, WEST
+
+XY_MIN = np.array([WEST, SOUTH])
+XY_RANGE = np.array([EAST, NORTH])-XY_MIN
 
 def compute_clearsky(times, latitudes, longitudes):
     clearsky = np.full(shape=(len(times), len(latitudes), 3), 
@@ -118,6 +122,12 @@ class cross_processor_batch:
         Satellite image loader object which returns data with any required
         preprocessing already implemented.
     nwp_loader : nwp_loader.NWPLoader, optional
+    include_tod : bool, optional
+        Include time-of-day as feature.
+    include_toy : bool, optional
+        Include time-of-year as feature.
+    include_latlon : bool, optional
+        Include latitude and longitude information as features.
     batch_size : int, default 256
         Number of samples to use in batch
     batches_per_superbatch : int, default 16
@@ -127,9 +137,11 @@ class cross_processor_batch:
     n_epochs : int, optional
         Overrides n_superbatches and we loop through the entire dataset this 
         many times.
-    gpu : bool, default False
+    gpu : int, default 0
         Whether to load the data into CUDA GPU. Will initially load in CPU then
-        transfer over.
+        transfer over. Value 0 means batches stay on CPU. Value 1 means each
+        batch is transfered to GPU only when required. Value 2 means the full
+        superbatch is transfered to GPU on loading.
     shuffle_datetime bool, default True (strongly recommended)
         Whether to shuffle the datetimes before loading so that all samples in
         batch are not in consecutive order.
@@ -148,7 +160,8 @@ class cross_processor_batch:
     # slots for faster attribute access
     # on speed test this contributes maybe 2% speedup
     __slots__ = ['datetime', 'lead_time', 'y', 'y_meta', 'clearsky', 
-              'sat_loader','nwp_loader', 'batch_size', 'batches_per_superbatch', 
+              'sat_loader', 'nwp_loader', 'include_tod', 'include_toy', 
+              'include_latlon', 'batch_size', 'batches_per_superbatch', 
               'superbatch_size','n_superbatches', 'n_epochs', 'gpu', 
               'batch_index','superbatch_index', 'epoch', 
               'consec_samples_per_datetime', 'indexes', 'index_number',
@@ -159,10 +172,13 @@ class cross_processor_batch:
                  clearsky=None,
                  sat_loader=None,
                  nwp_loader=None,
+                 include_tod=True,
+                 include_toy=True,
+                 include_latlon=False,
                  lead_time=pd.Timedelta('0min'),
                  batch_size=256, batches_per_superbatch=16, 
                  n_superbatches=1, n_epochs=None, 
-                 gpu=False,
+                 gpu=0,
                  consec_samples_per_datetime=10,
                  parallel_loading_cores = 2,
                 ):
@@ -193,6 +209,11 @@ class cross_processor_batch:
         self.sat_loader = sat_loader
         self.nwp_loader = nwp_loader
         
+        # store metadata options
+        self.include_tod = include_tod
+        self.include_toy = include_toy
+        self.include_latlon = include_latlon
+        
         # store options
         self.batch_size = batch_size
         self.batches_per_superbatch = batches_per_superbatch
@@ -220,8 +241,8 @@ class cross_processor_batch:
                 'thread_current_index':-1,
                 'thread_subindex':-1
             } for i in range(self.parallel_loading_cores)}
-        self._instantiate_superbatch('cpu')
-        if self.gpu: self._instantiate_superbatch('gpu')
+        self._instantiate_batches(0) # cpu superbatch
+        if self.gpu>0: self._instantiate_batches(gpu) # gpu (super)batch
             
             
     def __next__(self):
@@ -258,57 +279,73 @@ class cross_processor_batch:
                 self.index_number = 0
             
             self.load_next_superbatch_to_cpu()
-            if self.gpu:
+            if self.gpu==2:
                 self.transfer_superbatch_to_gpu()
             self.batch_index = 0
 
-        batch = self.return_batch(self.batch_index, gpu=self.gpu)
+        batch = self.return_batch()
         
         return batch
+    
     
     def __iter__(self):
             return self
     
-    def _instantiate_superbatch(self, where):
+    
+    def _instantiate_batches(self, kind):
         """Instantiate space for data in memory"""
         def new_array(size):
-            if where=='gpu':
+            if kind==0:
                 return torch.full(size=size, 
                                   fill_value=0., 
                                   dtype=torch.float16, 
                                   device='cuda')
-            elif where=='cpu':
+            elif kind in [1,2]:
                 return np.full(shape=size, 
                                   fill_value=0., 
                                   dtype=np.float32)
+            else:
+                raise ValueError('batch kind not valid')
         
-        superbatch = {}
-        superbatch['y'] = new_array((self.superbatch_size, 1))
-        superbatch['day_fraction'] =  new_array((self.superbatch_size, 1))
+        N = self.batch_size if kind==1 else self.superbatch_size
+        
+        batch = {}
+        batch['y'] = new_array((N, 1))
+        
+        if self.include_tod:
+            batch['day_fraction'] =  new_array((N, 1))
+        if self.include_toy:
+            batch['year_fraction'] =  new_array((N, 1))
+        if self.include_latlon:
+            batch['latlon'] =  new_array((N, 2, 1))
         
         if self.clearsky is not None:
-            superbatch['clearsky'] = new_array((self.superbatch_size, 1))
+            batch['clearsky'] = new_array((N, 1))
         
         if self.sat_loader is not None:
-            superbatch['satellite'] = new_array((self.superbatch_size,) 
-                                        + self.sat_loader.sample_shape
+            batch['satellite'] = new_array(
+                    (N,) + self.sat_loader.sample_shape
             )
         if self.nwp_loader is not None:
-            superbatch['nwp'] = new_array((self.superbatch_size,) 
-                                        + self.nwp_loader.sample_shape
+            batch['nwp'] = new_array( 
+                                       (N,) + self.nwp_loader.sample_shape
             )
         
-        if where=='cpu':
-            self.cpu_superbatch = superbatch
-        elif where=='gpu':
-            self.gpu_superbatch = superbatch
+        if kind==0:
+            self.cpu_superbatch = batch
+        elif kind==1:
+            self.gpu_batch = batch
+        elif kind==2:
+            self.gpu_superbatch = batch
         return
+    
     
     def shuffle_cpu_superbatch(self):
         rand_state = np.random.get_state()
         for key in self.cpu_superbatch.keys():
                 np.random.set_state(rand_state)
                 np.random.shuffle(self.cpu_superbatch[key])
+    
     
     def load_next_superbatch_to_cpu(self):
         
@@ -335,6 +372,17 @@ class cross_processor_batch:
                         newepoch.value += 1
                 thread_subindex = 0
             return thread_current_index, thread_subindex
+        
+        def day_frac(dt):
+            return (dt.hour+dt.minute/60.)/24.
+
+        def year_frac(dt):
+            return dt.timetuple().tm_yday/365.
+        
+        def latlon_fraction(xy):
+            xy_frac = xy - XY_MIN
+            xy_frac = xy / XY_RANGE
+            return xy_frac
 
         def single_thread_data_gather(n_start, n_stop, cache_dict):
             
@@ -384,8 +432,19 @@ class cross_processor_batch:
                         continue
                         
                     self.cpu_superbatch['y'][n] = self.y.values[i, j]
-                    day_frac = lambda x: ((x.hour+x.minute/60)/24.)
-                    self.cpu_superbatch['day_fraction'][n] = day_frac(self.datetime[i])
+                    
+                    # valid time of forecast
+                    dt_valid = pd.Timestamp(self.datetime[i])
+                    # location of system
+                    xy = self.y_meta.loc[self.y.columns[j]][['x', 'y']]
+                    
+                    if self.include_tod:
+                        self.cpu_superbatch['day_fraction'][n] = day_frac(dt_valid)
+                    if self.include_toy:
+                        self.cpu_superbatch['year_fraction'][n] = year_frac(dt_valid)
+                    if self.include_latlon:
+                        self.cpu_superbatch['latlon'][n,...,0] = (
+                                latlon_fraction(xy.values))
                     
                     if self.clearsky is not None:
                         if np.isnan(self.clearsky.values[i, j]):
@@ -400,12 +459,11 @@ class cross_processor_batch:
                     
                     # load sat images and/or nwp from before the time prediction
                     # is made.
-                    dt = pd.Timestamp(self.datetime[i])-self.lead_time
+                    dt = dt_valid-self.lead_time
                     
                     if self.sat_loader is not None:
                         sat = sat_loader.get_rectangle_array(
-                                dt.floor('5min') - pd.Timedelta('1min'),
-                                *self.y_meta.loc[self.y.columns[j]][['x', 'y']]
+                                dt.floor('5min') - pd.Timedelta('1min'), *xy
                                 ).astype(np.float32)[..., np.newaxis]
                         # check for nans and shape
                         completed_new = (completed_new and 
@@ -422,9 +480,8 @@ class cross_processor_batch:
                             self.cpu_superbatch['satellite'][n] = sat
                     
                     if self.nwp_loader is not None:
-                        nwp = nwp_loader.get_rectangle_array(dt, self.datetime[i], 
-                                *self.y_meta.loc[self.y.columns[j]][['x', 'y']]
-                                ).astype(np.float32)[..., np.newaxis]
+                        nwp = nwp_loader.get_rectangle_array(dt, dt_valid, 
+                                *xy).astype(np.float32)[..., np.newaxis]
                         # check for nans and shape
                         completed_new = (completed_new and 
                             not np.any(np.isnan(nwp)) and 
@@ -497,13 +554,26 @@ class cross_processor_batch:
                 self.gpu_superbatch[k].copy_(torch.HalfTensor(v))
             except:
                 raise Exception('Problem with', k)
+
     
-    def return_batch(self, batch_index, gpu=False):
-        if gpu:
-            superbatch = self.gpu_superbatch
-        else:
-            superbatch = self.cpu_superbatch
-        i1 = batch_index*self.batch_size
+    def return_batch(self):
+        
+        i1 = self.batch_index*self.batch_size
         i2 = i1 + self.batch_size
-        dict_view = {k:v[i1:i2] for k, v in superbatch.items()}
-        return dict_view
+        
+        if self.gpu==1:
+            for k, v in self.cpu_superbatch.items():
+                try:
+                    self.gpu_batch[k].copy_(torch.HalfTensor(v[i1:i2]))
+                except:
+                    raise Exception('Problem with', k)
+            batch = self.gpu_batch
+            
+        else:
+            if self.gpu==0:
+                superbatch = self.cpu_superbatch
+            elif self.gpu==2:
+                superbatch = self.gpu_superbatch
+            batch = {k:v[i1:i2] for k, v in superbatch.items()}
+            
+        return batch
