@@ -166,7 +166,8 @@ class cross_processor_batch:
               'batch_index','superbatch_index', 'epoch', 
               'consec_samples_per_datetime', 'indexes', 'index_number',
               'extinguished', 'reshuffle_required', 'parallel_loading_cores', 
-              '_parallel_loading_cache', 'cpu_superbatch', 'gpu_superbatch']
+              '_parallel_loading_cache', 'cpu_superbatch', 'gpu_superbatch',
+              'gpu_batch']
     
     def __init__(self, y, y_meta, 
                  clearsky=None,
@@ -296,14 +297,14 @@ class cross_processor_batch:
         """Instantiate space for data in memory"""
         def new_array(size):
             if kind==0:
+                return np.full(shape=size, 
+                                  fill_value=0., 
+                                  dtype=np.float32)
+            elif kind in [1,2]:
                 return torch.full(size=size, 
                                   fill_value=0., 
                                   dtype=torch.float16, 
                                   device='cuda')
-            elif kind in [1,2]:
-                return np.full(shape=size, 
-                                  fill_value=0., 
-                                  dtype=np.float32)
             else:
                 raise ValueError('batch kind not valid')
         
