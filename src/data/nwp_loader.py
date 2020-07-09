@@ -99,7 +99,9 @@ class NWPLoader(Dataset):
             self.dataset = xr.open_zarr(store=store,  
                                     drop_variables=drop_variables,
                                     consolidated=True)[channels]
-        self.datset = self.dataset.sortby('time')
+        # transform below gives same y-oritentation as sat
+        self.dataset = self.dataset.sortby('time').isel(y=slice(None, None, -1))
+        
         self.width = width
         self.height = height
         
