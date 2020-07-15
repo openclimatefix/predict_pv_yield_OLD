@@ -60,6 +60,7 @@ class SatelliteLoader(Dataset):
                  store=SATELLITE_STORE, 
                  width=22000,
                  height=22000,
+                 time_slice=[0,],
                  channels=DEFAULT_CHANNELS,
                  preprocess_method='norm'):
         
@@ -69,15 +70,18 @@ class SatelliteLoader(Dataset):
             raise ValueError('Selected channel list not available')
         if width%2000!=0 or height%2000!=0:
             raise ValueError("Grid spacing is 2000m so height and width should be multiple of this")
+        if not np.all(np.array(time_slice)<=0):
+            raise ValueError("time slice indices must not be positive")
         
         self.channels = channels
         # transforms below are needed to have same dimension order as nwp
         self.dataset = xr.open_zarr(store=store, consolidated=True) \
                          .sel(variable=channels, y=slice(None, None, -1)) \
-                         .transpose('variable', 'time', 'y', 'x') \
+                         .transpose('variable', 'y', 'x', 'time') \
                          .sortby('time')
         self.width = width
         self.height = height
+        self.time_slice = time_slice
         self.preprocess_method = preprocess_method
         if preprocess_method is not None:
             self._agg_stats = xr.open_zarr(store=SATELLITE_AGG_STORE, 
@@ -89,7 +93,8 @@ class SatelliteLoader(Dataset):
     @property
     def sample_shape(self):
         """(channels, y, x, time)"""
-        return (len(self.channels), self.height//2000, self.width//2000, 1)
+        return (len(self.channels), self.height//2000, 
+                self.width//2000, len(self.time_slice))
     
     def close(self):
         self.dataset.close()
@@ -99,7 +104,9 @@ class SatelliteLoader(Dataset):
         
     def get_rectangle(self, time, centre_x, centre_y):
         
-        time = np.datetime64(time)
+        t0 = np.datetime64(time)
+        times = np.array([t0 + np.timedelta64(5*i, 'm') for i in self.time_slice])
+        
         # convert from km to m
         half_width = self.width / 2
         half_height = self.height / 2
@@ -110,9 +117,9 @@ class SatelliteLoader(Dataset):
         west = centre_x - half_width
 
         # cache to speed up loading same datetime
-        if time!=self._cache_date:
-            self._cache = self.dataset.sel(time=time).load()
-            self._cache_date = time
+        if t0!=self._cache_date:
+            self._cache = self.dataset.sel(time=times).load()
+            self._cache_date = t0
 
         rectangle = self._cache.sel(y=slice(south, north), 
                                     x=slice(west, east))
@@ -147,5 +154,5 @@ class SatelliteLoader(Dataset):
     
 
 if __name__=='__main__':
-    sat_loader = SatelliteLoader()
+    sat_loader = SatelliteLoader(time_slice=[-2, -1])
     sat_loader.get_rectangle('2019-01-01 10:59', 0, 0)

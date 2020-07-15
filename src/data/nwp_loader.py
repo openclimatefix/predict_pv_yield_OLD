@@ -78,6 +78,7 @@ class NWPLoader(Dataset):
                  store='all', 
                  width=22000,
                  height=22000,
+                 time_slice=[0,],
                  channels=DEFAULT_CHANNELS,
                  preprocess_method='norm'):
         
@@ -87,6 +88,8 @@ class NWPLoader(Dataset):
             raise ValueError('Selected channel list not available')
         if width%2000!=0 or height%2000!=0:
             raise ValueError("Grid spacing is 2000m so height and width should be multiple of this")
+        if not np.all(np.array(time_slice)<36):
+            raise ValueError("forecast only goes to 36 hours ahead. Max time slice must be less than this")
 
         self.channels = channels
         drop_variables = set(AVAILABLE_CHANNELS.index) - set(channels)
@@ -100,10 +103,13 @@ class NWPLoader(Dataset):
                                     drop_variables=drop_variables,
                                     consolidated=True)[channels]
         # transform below gives same y-oritentation as sat
-        self.dataset = self.dataset.sortby('time').isel(y=slice(None, None, -1))
+        self.dataset = self.dataset\
+                        .transpose('y', 'x', 'time', 'step') \
+                        .sortby('time').isel(y=slice(None, None, -1))
         
         self.width = width
         self.height = height
+        self.time_slice = time_slice
         
         self.preprocess_method = preprocess_method
         if preprocess_method is not None:
@@ -114,8 +120,9 @@ class NWPLoader(Dataset):
             
     @property
     def sample_shape(self):
-        """(channels,y,x,(time,))"""
-        return (len(self.channels), self.height//2000, self.width//2000, 1)
+        """(channels, y, x, time)"""
+        return (len(self.channels), self.height//2000, 
+                self.width//2000, len(self.time_slice))
     
     def close(self):
         self.dataset.close()
@@ -126,12 +133,16 @@ class NWPLoader(Dataset):
     def get_rectangle(self, forecast_time, valid_time, centre_x, centre_y):
         # select first forecast time before selected time
         # frecasts are 3-hourly
-        forecast_time = pd.Timestamp(forecast_time).floor('180min').to_pydatetime()
-        valid_time = pd.Timestamp(valid_time).floor('60min').to_pydatetime()
+        
+        valid_t0 = pd.Timestamp(valid_time).floor('60min').to_numpy()
+        valid_times = np.array([valid_t0 + np.timedelta64(i, 'h') for i in self.time_slice])
+        
+        forecast_t0 = pd.Timestamp(forecast_time).floor('180min').to_numpy()
+        forecast_times = np.array([forecast_t0 if forecast_t0<vt else pd.Timestamp(vt).floor('180min').to_numpy() for vt in valid_times])
+        
         # check forecast in range of data
-        step = valid_time - forecast_time
-        if (step > pd.Timedelta('37h')) or (step < pd.Timedelta('0h')):
-            raise ValueError(f'valid_time {step} ahead of forecast_time')
+        if (valid_t0 >= forecast_t0+np.timedelta64(37, 'h')) or (valid_t0 < forecast_t0):
+            raise ValueError(f'valid_time {valid_t0 - forecast_t0} ahead of forecast_time')
         
         # convert from km to m
         half_width = self.width / 2
@@ -143,9 +154,15 @@ class NWPLoader(Dataset):
         west = centre_x - half_width
         
         # cache to speed up loading on same datetime
-        if [forecast_time, step]!=self._cache_dates:
-            self._cache = self.dataset.sel(time=forecast_time, step=step).load()
-            self._cache_dates = [forecast_time, step]
+        if [forecast_t0, valid_t0]!=self._cache_dates:
+            datasets = []
+            for ft in np.unique(forecast_times):
+                steps = valid_times[forecast_times==ft]-ft
+                ds = self.dataset.sel(time=ft, step=steps).drop_vars('time').load()
+                ds['step'] = ft-forecast_t0+ds.step
+                datasets.append(ds)
+            self._cache = xr.concat(datasets, dim='step').assign_coords(time=forecast_t0)
+            self._cache_dates = [forecast_t0, valid_t0]
             
         rectangle = self.preprocess(self._cache.sel(
                                         y=slice(south, north), 
