@@ -48,13 +48,13 @@ def data_source_intersection(pv_output, clearsky=None, sat_loader=None, nwp_load
         intersect_times = np.intersect1d(clearsky.index,values, intersect_times)
     
     if sat_loader is not None:
-        sat_times = sat_loader.dataset.time.values + pd.Timedelta('1min') - lead_time
+        sat_times = sat_loader.dataset.time.values + pd.Timedelta('1min') + lead_time
         intersect_times = np.intersect1d(sat_times, intersect_times)
         
     if nwp_loader is not None:
         nwp_times = nwp_loader.dataset.time.values
-        forecast_time = pd.to_datetime(intersect_times - lead_time)
-        in_nwp = np.in1d(forecast_time.floor('180min'), nwp_times)
+        forecast_time = pd.to_datetime(intersect_times - lead_time).floor('180min')
+        in_nwp = np.in1d(forecast_time, nwp_times)
         intersect_times = intersect_times[in_nwp]
         
     return pd.DatetimeIndex(intersect_times)
