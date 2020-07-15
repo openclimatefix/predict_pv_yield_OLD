@@ -42,22 +42,30 @@ def data_source_intersection(pv_output, clearsky=None, sat_loader=None, nwp_load
     (optional), and the available numerical weather prediction data (optional)
     overlap. This is considered with a forecast lead time."""
 
-    intersect_times = pv_output.index.values
+    valid_y_times = pv_output.index.values
     
     if clearsky is not None:
-        intersect_times = np.intersect1d(clearsky.index,values, intersect_times)
+        valid_y_times = np.intersect1d(clearsky.index,values, valid_y_times)
     
     if sat_loader is not None:
-        sat_times = sat_loader.dataset.time.values + pd.Timedelta('1min') + lead_time
-        intersect_times = np.intersect1d(sat_times, intersect_times)
+        
+        for i in sat_loader.time_slice:
+            # times in future we can predict y using past sat images
+            available_sat_prediction_times = sat_loader.dataset.time.values + \
+                                (pd.Timedelta(f'{i*5+1}min') + lead_time)
+            valid_y_times = np.intersect1d(available_sat_prediction_times, valid_y_times)
         
     if nwp_loader is not None:
         nwp_times = nwp_loader.dataset.time.values
-        forecast_time = pd.to_datetime(intersect_times - lead_time).floor('180min')
-        in_nwp = np.in1d(forecast_time, nwp_times)
-        intersect_times = intersect_times[in_nwp]
+        for i in nwp_loader.time_slice:
+            # past nwp forecast times required to make predictions at given
+            # y times
+            required_nwp_forecast_times = (valid_y_times - lead_time + pd.Timedelta(f'{i}hours'))\
+                                        .floor('180min').to_array()\
+            in_nwp = np.in1d(required_nwp_forecast_times, nwp_times)
+            valid_y_times = valid_y_times[in_nwp]
         
-    return pd.DatetimeIndex(intersect_times)
+    return pd.DatetimeIndex(valid_y_times)
 
 @nb.jit()
 def _shuffled_indexes_for_pv(pv_output_values, consec_samples_per_datetime):
