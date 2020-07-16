@@ -48,7 +48,7 @@ def data_source_intersection(pv_output, clearsky=None, sat_loader=None, nwp_load
         valid_y_times = np.intersect1d(clearsky.index,values, valid_y_times)
     
     if sat_loader is not None:
-        
+
         for i in sat_loader.time_slice:
             # times in future we can predict y using past sat images
             available_sat_prediction_times = sat_loader.dataset.time.values + \
@@ -61,7 +61,7 @@ def data_source_intersection(pv_output, clearsky=None, sat_loader=None, nwp_load
             # past nwp forecast times required to make predictions at given
             # y times
             required_nwp_forecast_times = (valid_y_times - lead_time + pd.Timedelta(f'{i}hours'))\
-                                        .floor('180min').to_array()\
+                                        .floor('180min').to_array()
             in_nwp = np.in1d(required_nwp_forecast_times, nwp_times)
             valid_y_times = valid_y_times[in_nwp]
         
@@ -368,11 +368,13 @@ class cross_processor_batch:
         # store whether we run over end of data
         newepoch = Value('i', 0)
         
-        def advance_index(thread_current_index, thread_subindex):
+        def advance_index(thread_current_index, thread_subindex, 
+                          force_new_index=False):
             # update thread indices and global next index
             thread_subindex+=1
             if (thread_subindex>=self.indexes.shape[1] 
-                            or thread_current_index==-1):
+                            or thread_current_index==-1
+                            or force_new_index):
                 with index_n.get_lock():
                     thread_current_index = index_n.value
                     index_n.value += 1
@@ -482,7 +484,8 @@ class cross_processor_batch:
                         if not completed_new: 
                             thread_current_index, thread_subindex = (
                                 advance_index(thread_current_index, 
-                                              thread_subindex)
+                                              thread_subindex, 
+                                              force_new_index=True)
                             )
                             continue
                         else:
@@ -499,7 +502,8 @@ class cross_processor_batch:
                         if not completed_new: 
                             thread_current_index, thread_subindex = (
                                 advance_index(thread_current_index, 
-                                              thread_subindex)
+                                              thread_subindex,
+                                              force_new_index=True)
                             )
                             continue
                         else:
