@@ -39,16 +39,19 @@ def compute_clearsky(times, latitudes, longitudes):
 def floor_datetime64(x, freq):
     return pd.to_datetime(x).floor(freq).values
 
-def data_source_intersection(pv_output, clearsky=None, sat_loader=None, nwp_loader=None, 
+def data_source_intersection(pv_output, clearsky=None, 
+                             sat_loader=None, nwp_loader=None, 
                              lead_time=pd.Timedelta('0min')):
-    """Return the datetimes where the pv data, the available satellite data 
+    """Return boolean of pv dates, where the available satellite data 
     (optional), and the available numerical weather prediction data (optional)
     overlap. This is considered with a forecast lead time."""
 
     valid_y_times = pv_output.index.values
+    valid_x = np.ones(valid_y_times.shape, dtype=bool)
     
     if clearsky is not None:
-        valid_y_times = np.intersect1d(clearsky.index,values, valid_y_times)
+        valid = np.in1d(clearsky.index.values, valid_y_times)
+        valid_x = valid_x & valid
     
     if sat_loader is not None:
 
@@ -56,7 +59,10 @@ def data_source_intersection(pv_output, clearsky=None, sat_loader=None, nwp_load
             # times in future we can predict y using past sat images
             available_sat_prediction_times = (sat_loader.dataset.time.values + 
                                 (pd.Timedelta(f'{-i*5+1}min') + lead_time))
-            valid_y_times = np.intersect1d(available_sat_prediction_times, valid_y_times)
+            valid = np.in1d(valid_y_times, available_sat_prediction_times)
+            valid_x = valid_x & valid
+            
+            
         
     if nwp_loader is not None:
         nwp_times = nwp_loader.dataset.time.values
@@ -67,39 +73,52 @@ def data_source_intersection(pv_output, clearsky=None, sat_loader=None, nwp_load
                 valid_y_times - lead_time + pd.Timedelta(f'{i}hours'), 
                 '180min'
             )
-            in_nwp = np.in1d(required_nwp_forecast_times, nwp_times)
-            valid_y_times = valid_y_times[in_nwp]
+            valid = np.in1d(required_nwp_forecast_times, nwp_times)
+            valid_x = valid_x & valid
         
-    return pd.DatetimeIndex(valid_y_times)
+    return valid_x
 
 @nb.jit()
-def _shuffled_indexes_for_pv(pv_output_values, consec_samples_per_datetime):
+def _shuffled_indexes_for_pv(pv_output_values, y_index_sequence, x_available,
+                             samples_per_datetime, max_missing):
     """
     Parameters
     ----------
     pv_output_values : array_like,
         The pv-output values
-    consec_samples_per_datetime: int
-        number of samples per each datetime row. Value -1 means take all pv 
+    y_index_sequence : array_like,
+        Indexes after the first sample to take items for sequence.
+    x_available : array_like,
+        Boolean array along first axis of pv_output_values stating whether x
+        data is available for this being the first value of a sequence.
+    samples_per_datetime: int
+        Number of samples per each datetime row. Value -1 means take all pv 
         systems fotr each randomly selected datetime. 
+    max_missing : int, 
+        Maximum number of values in sequence allowed to be missing.
     """
-    if consec_samples_per_datetime<1 and consec_samples_per_datetime!=-1:
+    if samples_per_datetime<1 and samples_per_datetime!=-1:
         raise ValueError("invalid samples_per_datetime")
     rowchunks = []
-    n = consec_samples_per_datetime
+    n = samples_per_datetime
     i_max, j_max = pv_output_values.shape
+    # modify limits for sequence
+    i_max = i_max-max(y_index_sequence)
     
     # get indices without nans
     for i in range(i_max):
+        # if x data not available then skip this start time
+        if not x_available[i]:
+            continue
         row=[]
         for j in range(j_max):
-            if not np.isnan(pv_output_values[i,j]):
+            if not np.isnan(pv_output_values[y_index_sequence+i,j]).sum()>max_missing:
                 row.append((i,j))
                 
         if len(row)>0:
             # shuffle row
             row = [row[k] for k in np.random.permutation(np.arange(len(row)))]
-            if consec_samples_per_datetime==-1: n = len(row)
+            if samples_per_datetime==-1: n = len(row)
             rowchunks.extend([row[m:m+n] for m in range(0, len(row), n)])
     
     # shuffle the order of the same-time-different-pv-system chunks
@@ -107,7 +126,7 @@ def _shuffled_indexes_for_pv(pv_output_values, consec_samples_per_datetime):
     
     # fill with value so can be converted to numpy array
     for i, rc in enumerate(rowchunks):
-        if consec_samples_per_datetime==-1: n = j_max
+        if samples_per_datetime==-1: n = j_max
         rowchunks[i] = rc+[(-1,-1)]*(n-len(rc))
         
     return np.array(rowchunks, dtype=np.int32)
@@ -128,6 +147,11 @@ class cross_processor_batch:
         PV metadata with columns which include the x and y coordinates of the PV 
         systems. Index must be unique system identifiers which cover all systems 
         in `y`.
+    y_index_sequence : array_like, optional
+        y-sequence to create defined as index numbers starting from first point
+        in time.
+    max_missing_sequence_vals : int, optional
+        Maximum number of missing sequence values tolerated.
     clearsky : pandas.DataFrame, optional
         Clearsky GHI data for each time and position as the data from the 
         systems in `y`.
@@ -172,17 +196,20 @@ class cross_processor_batch:
     """
     # slots for faster attribute access
     # on speed test this contributes maybe 2% speedup
-    __slots__ = ['datetime', 'lead_time', 'y', 'y_meta', 'clearsky', 
-              'sat_loader', 'nwp_loader', 'include_tod', 'include_toy', 
-              'include_latlon', 'batch_size', 'batches_per_superbatch', 
-              'superbatch_size','n_superbatches', 'n_epochs', 'gpu', 
-              'batch_index','superbatch_index', 'epoch', 
-              'consec_samples_per_datetime', 'indexes', 'index_number',
+    __slots__ = ['datetime', 'lead_time', 'y', 'y_meta', 'y_index_sequence',
+                 'max_missing_sequence_vals',
+              'clearsky', 'sat_loader', 'nwp_loader', 'include_tod', 
+              'include_toy', 'include_latlon', 'batch_size', 
+              'batches_per_superbatch', 'superbatch_size','n_superbatches', 
+              'n_epochs', 'gpu', 'batch_index','superbatch_index', 'epoch', 
+              'samples_per_datetime', 'indexes', 'index_number',
               'extinguished', 'reshuffle_required', 'parallel_loading_cores', 
               '_parallel_loading_cache', 'cpu_superbatch', 'gpu_superbatch',
-              'gpu_batch']
+              'gpu_batch', 'x_available']
     
     def __init__(self, y, y_meta, 
+                 y_index_sequence = [0],
+                 max_missing_sequence_vals=0,
                  clearsky=None,
                  sat_loader=None,
                  nwp_loader=None,
@@ -193,31 +220,42 @@ class cross_processor_batch:
                  batch_size=256, batches_per_superbatch=16, 
                  n_superbatches=1, n_epochs=None, 
                  gpu=0,
-                 consec_samples_per_datetime=10,
+                 samples_per_datetime=10,
                  parallel_loading_cores = 2,
                 ):
         
         # remove UTC timezone info
         y.index = y.index.values
+        y_index_sequence =np.array(y_index_sequence)
         
-        # make sure we only keep datetimes where we have all data
-        datetime = data_source_intersection(y, clearsky=clearsky,
+        # fill to regular time spacing (important for selecting sequences)
+        if len(y_index_sequence)>1:
+            y = y.reindex(pd.date_range(y.index.min(), y.index.max(), freq='5min'), 
+                          fill_value=np.nan)
+        
+        
+        # check which datetimes have x-data available
+        self.lead_time = lead_time
+        self.x_available = data_source_intersection(y,
+                                            clearsky=clearsky,
                                             sat_loader=sat_loader, 
                                             nwp_loader=nwp_loader, 
                                             lead_time=lead_time)
-        if len(datetime)==0:
+        if sum(self.x_available)==0:
             raise ValueError('Data sources do not overlap in time')
                         
-        self.datetime = datetime
-        self.lead_time = lead_time
-        
         # store datasets
-        self.y = y.reindex(datetime).astype(np.float32)
+        self.y = y.astype(np.float32)
+        self.datetime = y.index
         self.y_meta = y_meta.reindex(y.columns)
+        self.y_index_sequence = y_index_sequence
+        self.max_missing_sequence_vals = max_missing_sequence_vals
         if clearsky is None:
             self.clearsky = None
         else:
-            self.clearsky = clearsky.reindex(datetime).astype(np.float32)
+            self.clearsky = clearsky.reindex(self.datetime, 
+                                             fill_value=np.nan
+                                            ).astype(np.float32)
         
         # store loaders
         self.sat_loader = sat_loader
@@ -240,9 +278,12 @@ class cross_processor_batch:
         self.batch_index = -1
         self.superbatch_index = -1
         self.epoch = 0
-        self.consec_samples_per_datetime = consec_samples_per_datetime
-        self.indexes = _shuffled_indexes_for_pv(self.y.values, 
-                                               consec_samples_per_datetime)
+        self.samples_per_datetime = samples_per_datetime
+        self.indexes = _shuffled_indexes_for_pv(self.y.values,
+                                                y_index_sequence,
+                                                self.x_available,
+                                                samples_per_datetime,
+                                                max_missing_sequence_vals)
         self.index_number = 0
         self.extinguished = False
         self.reshuffle_required = False
@@ -289,7 +330,7 @@ class cross_processor_batch:
             # if we have reached the end of an epoch then reshuffle
             if self.reshuffle_required:
                 self.indexes = _shuffled_indexes_for_pv(self.y.values, 
-                                               self.consec_samples_per_datetime)
+                                               self.samples_per_datetime)
                 self.index_number = 0
             
             self.load_next_superbatch_to_cpu()
@@ -324,7 +365,7 @@ class cross_processor_batch:
         N = self.batch_size if kind==1 else self.superbatch_size
         
         batch = {}
-        batch['y'] = new_array((N, 1))
+        batch['y'] = new_array((N, len(self.y_index_sequence)))
         
         if self.include_tod:
             batch['day_fraction'] =  new_array((N, 1))
@@ -450,7 +491,7 @@ class cross_processor_batch:
                         completed_new = False
                         continue
 
-                    self.cpu_superbatch['y'][n] = self.y.values[i, j]
+                    self.cpu_superbatch['y'][n] = self.y.values[self.y_index_sequence+i, j]
 
                     # valid time of forecast
                     dt_valid = pd.Timestamp(self.datetime[i])
