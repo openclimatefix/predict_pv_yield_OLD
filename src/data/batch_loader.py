@@ -36,28 +36,41 @@ def compute_clearsky(times, latitudes, longitudes):
     
     return clearsky
 
+def floor_datetime64(x, freq):
+    return pd.to_datetime(x).floor(freq).values
+
 def data_source_intersection(pv_output, clearsky=None, sat_loader=None, nwp_loader=None, 
                              lead_time=pd.Timedelta('0min')):
     """Return the datetimes where the pv data, the available satellite data 
     (optional), and the available numerical weather prediction data (optional)
     overlap. This is considered with a forecast lead time."""
 
-    intersect_times = pv_output.index.values
+    valid_y_times = pv_output.index.values
     
     if clearsky is not None:
-        intersect_times = np.intersect1d(clearsky.index,values, intersect_times)
+        valid_y_times = np.intersect1d(clearsky.index,values, valid_y_times)
     
     if sat_loader is not None:
-        sat_times = sat_loader.dataset.time.values + pd.Timedelta('1min') + lead_time
-        intersect_times = np.intersect1d(sat_times, intersect_times)
+
+        for i in sat_loader.time_slice:
+            # times in future we can predict y using past sat images
+            available_sat_prediction_times = (sat_loader.dataset.time.values + 
+                                (pd.Timedelta(f'{-i*5+1}min') + lead_time))
+            valid_y_times = np.intersect1d(available_sat_prediction_times, valid_y_times)
         
     if nwp_loader is not None:
         nwp_times = nwp_loader.dataset.time.values
-        forecast_time = pd.to_datetime(intersect_times - lead_time).floor('180min')
-        in_nwp = np.in1d(forecast_time, nwp_times)
-        intersect_times = intersect_times[in_nwp]
+        for i in nwp_loader.time_slice:
+            # past nwp forecast times required to make predictions at given
+            # y times
+            required_nwp_forecast_times = floor_datetime64( 
+                valid_y_times - lead_time + pd.Timedelta(f'{i}hours'), 
+                '180min'
+            )
+            in_nwp = np.in1d(required_nwp_forecast_times, nwp_times)
+            valid_y_times = valid_y_times[in_nwp]
         
-    return pd.DatetimeIndex(intersect_times)
+    return pd.DatetimeIndex(valid_y_times)
 
 @nb.jit()
 def _shuffled_indexes_for_pv(pv_output_values, consec_samples_per_datetime):
@@ -355,16 +368,19 @@ class cross_processor_batch:
         # set up value for exiting thread
         thread_exit = Value('b', False)
         # keep track of if warned
-        already_warned = Value('b', False)
+        already_warned = Value('i', 0)
+        warn_every = 20
         
         # store whether we run over end of data
         newepoch = Value('i', 0)
         
-        def advance_index(thread_current_index, thread_subindex):
+        def advance_index(thread_current_index, thread_subindex, 
+                          force_new_index=False):
             # update thread indices and global next index
             thread_subindex+=1
             if (thread_subindex>=self.indexes.shape[1] 
-                            or thread_current_index==-1):
+                            or thread_current_index==-1
+                            or force_new_index):
                 with index_n.get_lock():
                     thread_current_index = index_n.value
                     index_n.value += 1
@@ -404,41 +420,43 @@ class cross_processor_batch:
                 completed_new=False # loop until we find valid sample
                 
                 while not completed_new:
-                    
+
                     #assume this sample will be fine
                     completed_new = True
-                    
+
                     # allow threads to be interupted
                     if thread_exit.value: return
-                    
+
                     # warn if repeats too high
                     repeats+=1
-                    if repeats == 20 and not already_warned.value:
+                    if repeats-already_warned.value==warn_every:
+                        with already_warned.get_lock():
+                            already_warned.value=repeats
                         warnings.warn(
-                            """
-                            Warning: Number of failed loads for one datapoint
-                            exceeded {}. This may imply a data issue.
-                            
-                            """.format(repeats))
-                        already_warned.value=True
-                                            
+                                """
+                                Warning: Number of failed loads for one datapoint
+                                exceeded {}. This may imply a data issue.
+
+                                """.format(repeats))
+
                     i, j = self.indexes[thread_current_index, thread_subindex]
-                    
+
                     # To make array regular shaped nan values were filled with
                     # -1. Nan values always occur at end of index rows
                     if i==j==-1:
                         thread_current_index, thread_subindex = advance_index(
-                                        thread_current_index, thread_subindex)
+                                        thread_current_index, thread_subindex,
+                                        force_new_index=True)
                         completed_new = False
                         continue
-                        
+
                     self.cpu_superbatch['y'][n] = self.y.values[i, j]
-                    
+
                     # valid time of forecast
                     dt_valid = pd.Timestamp(self.datetime[i])
                     # location of system
                     xy = self.y_meta.loc[self.y.columns[j]][['x', 'y']]
-                    
+
                     if self.include_tod:
                         self.cpu_superbatch['day_fraction'][n] = day_frac(dt_valid)
                     if self.include_toy:
@@ -446,7 +464,7 @@ class cross_processor_batch:
                     if self.include_latlon:
                         self.cpu_superbatch['latlon'][n,...,0] = (
                                 latlon_fraction(xy.values))
-                    
+
                     if self.clearsky is not None:
                         if np.isnan(self.clearsky.values[i, j]):
                             thread_current_index, thread_subindex = (
@@ -457,15 +475,15 @@ class cross_processor_batch:
                             continue
                         else:
                             self.cpu_superbatch['clearsky'][n] = self.clearsky.values[i, j]
-                    
+
                     # load sat images and/or nwp from before the time prediction
                     # is made.
                     dt = dt_valid-self.lead_time
-                    
+
                     if self.sat_loader is not None:
                         sat = sat_loader.get_rectangle_array(
                                 dt.floor('5min') - pd.Timedelta('1min'), *xy
-                                ).astype(np.float32)[..., np.newaxis]
+                                ).astype(np.float32)
                         # check for nans and shape
                         completed_new = (completed_new and 
                             not np.any(np.isnan(sat)) and 
@@ -474,15 +492,16 @@ class cross_processor_batch:
                         if not completed_new: 
                             thread_current_index, thread_subindex = (
                                 advance_index(thread_current_index, 
-                                              thread_subindex)
+                                              thread_subindex, 
+                                              force_new_index=True)
                             )
                             continue
                         else:
                             self.cpu_superbatch['satellite'][n] = sat
-                    
+
                     if self.nwp_loader is not None:
                         nwp = nwp_loader.get_rectangle_array(dt, dt_valid, 
-                                *xy).astype(np.float32)[..., np.newaxis]
+                                *xy).astype(np.float32)
                         # check for nans and shape
                         completed_new = (completed_new and 
                             not np.any(np.isnan(nwp)) and 
@@ -491,11 +510,13 @@ class cross_processor_batch:
                         if not completed_new: 
                             thread_current_index, thread_subindex = (
                                 advance_index(thread_current_index, 
-                                              thread_subindex)
+                                              thread_subindex,
+                                              force_new_index=True)
                             )
                             continue
                         else:
                             self.cpu_superbatch['nwp'][n] = nwp
+
                             
                     
                 # If it gets to here it will have got a valid sample so 
@@ -504,7 +525,6 @@ class cross_processor_batch:
                         advance_index(thread_current_index, thread_subindex)
                 )
                     
-
                         
             # store the current loading location
             cache_dict['thread_current_index'] = thread_current_index
