@@ -28,12 +28,14 @@ def train_test_split_day(pv_power_df, test_size, shuffle=True, seed=None):
     ----------
     pv_power_df : pandas.DataFrame of dimension (datetime, system_id),
         PV output power with pandas.DatetimeIndex type index.
-    test_size : float, int,
+    test_size : float or int,
         If float, should be between 0.0 and 1.0 and represent the proportion of 
         the dataset to include in the test split. If int, represents the 
         absolute number of test samples. 
     shuffle : bool, optional
         Whether to split days randomly. Else test days are latest in dataset
+    seed : int, optional
+        Random seed.
         
     Returns
     -------

@@ -8,6 +8,7 @@ import numba as nb
 from pvlib import tools
 from pvlib.solarposition import _spa_python_import
 
+spa = _spa_python_import('numba')
 
 def haurwitz(apparent_zenith):
     """Caluclate global horizontal irradiance from apparent zenith angle of sun
@@ -230,6 +231,28 @@ def spa_python(times, latitudes, longitudes,
     app_zenith = _solar_position_numba(unixtime, lats, lons, elev, pressure, 
                                 temperature, delta_t, atmos_refract, numthreads)
     return app_zenith
+
+
+def compute_clearsky(times, latitudes, longitudes):
+    """A slow function for calculating 3 clearsky quantities. Diffuse Horizontal 
+    Irradiance, Global Horizontal Irradiance and Direct Normal Irradiance.
+    
+    Returns
+    -------
+    numpy.ndarray
+    """
+    clearsky = np.full(shape=(len(times), len(latitudes), 3), 
+                       fill_value=np.NaN, dtype=np.float32)
+
+    
+    for i, (lat, lon) in enumerate(zip(lat, lon)):
+        loc = Location(
+                latitude=lat,
+                longitude=lon,
+                tz='UTC').get_clearsky(times)
+        clearsky[:,i,:] = clearsky_for_location.values    
+    
+    return clearsky
 
 if __name__=='__main__':
     
