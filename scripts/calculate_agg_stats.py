@@ -59,8 +59,8 @@ print('Starting satellite aggregate statistics')
 
 # At time of last running only June 2018 to Dec 2019 is available. So I just use
 # 2019 here so that samples are even over season.
-all_sat_channels = list(src.data.sat_loader.AVAILABLE_CHANNELS.index)
-sat_ds = src.data.sat_loader.SatelliteLoader(channels=all_sat_channels).dataset
+sat_ds = xr.open_zarr(store=src.data.sat_loader.SATELLITE_STORE, 
+                      consolidated=True)
 sat_ds = sat_ds.sel(time=slice('2019-01-01', '2019-12-31'))
 
 sat_time_message="""
@@ -84,8 +84,13 @@ sat_aggs.to_netcdf(f"{agg_dir}/sat_aggs.nc")
 print('Starting NWP aggregate statistics')
 
 # At time of last running this is over a 2 year period from Jan 2018 to Dec 2019
-all_nwp_channels = list(src.data.nwp_loader.AVAILABLE_CHANNELS.index)
-nwp_ds = src.data.nwp_loader.NWPLoader(channels=all_nwp_channels).dataset
+nwp_ds = xr.concat(
+    [
+        xr_unique(xr.open_zarr(store=s,  consolidated=True)) 
+        for s in src.data.nwp_loader.NWP_STORES
+    ], 
+    dim='time')
+
 
 # Don't need 37 hours per 3-hourly forecast. Take every n-th forecast and m-th valid time
 nwp_time_message="""
