@@ -1,12 +1,15 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In this notebook we calculate some values which will be useful in preprocessing the EUMETSAT and UKV data (min, max, mean, std etc) and upload them to the GCP bucket. 
-# 
-# Currently these aggregate statistic values are calculated over less than a full year, so ideally this will be rerun once more data is available.
+"""
+This script performs the same function as notebook 
+data_analysis/004-sat_and_nwp_norm_values.ipynb
 
+This is to calculate useful aggregate statictics for the satellite and NWP data
+so that it can be normalised, min-max scaled, or log transformed and then 
+normalised or min-max scaled.
+"""
 
-from src.data.constants import GCP_FS
 import xarray as xr
 import pandas as pd
 import numpy as np
@@ -15,6 +18,13 @@ import dask
 
 import os
 import gcsfs
+
+import src
+from src.data.constants import GCP_FS
+
+# set up local path to save to
+agg_dir = os.path.expanduser("~/agg_data")
+os.makedirs(agg_dir, exist_ok=True)
 
 
 def aggregates(ds, dim):
@@ -43,52 +53,46 @@ def aggregates(ds, dim):
     return agg_ds
 
 
-agg_dir = os.path.expanduser("~/agg_data")
-os.makedirs(agg_dir, exist_ok=True)
+################################################################################
+# Satellite aggrgate stats
+print('Starting satellite aggregate statistics')
 
+# At time of last running only June 2018 to Dec 2019 is available. So I just use
+# 2019 here so that samples are even over season.
+all_sat_channels = list(src.data.sat_loader.AVAILABLE_CHANNELS.index)
+sat_ds = src.data.sat_loader.SatelliteLoader(channels=all_sat_channels).dataset
+sat_ds = sat_ds.sel(time=slice('2019-01-01', '2019-12-31'))
 
-# ## Satellite aggrgate stats
-# 
-# Note this is only calculated from Jan, Feb and June 2019. See graph further below for times
+sat_time_message="""
+    Aggregate statistics (min,max, logmin etc) used for 
+    preprocessing calculated over date range 2019-01-01 : 2019-12-31. Sample 
+    every ~25mins
+"""
 
+sl = slice(None, None, 5)
+sat_ds_filtered = sat_ds.isel(time=sl)
+sat_aggs = aggregates(sat_ds_filtered, dim=('x', 'y', 'time'))
+sat_aggs.attrs['time-range'] = sat_time_message
 
-#SATELLITE_ZARR_PATH = 'solar-pv-nowcasting-data/satellite/EUMETSAT/SEVIRI_RSS/OSGB36/zarr'
-#SATELLITE_STORE = gcsfs.mapping.GCSMap(SATELLITE_ZARR_PATH, gcs=GCP_FS, 
-#                                       check=True, create=False)
-
-#sat_ds = xr.open_zarr(store=SATELLITE_STORE, consolidated=True)
-#sat_time_message="""Dates from 2019 Jan, Feb and June. Sample every ~25mins"""
-#sl = slice(None, None, 5)
-#sat_ds_filtered = sat_ds.isel(time=sl)
-#sat_aggs = aggregates(sat_ds_filtered, dim=('x', 'y', 'time'))
-#sat_aggs.attrs['time-range'] = sat_time_message
 
 # save locally just to avoid losing the calculaion somehow
-#sat_aggs.to_netcdf(f"{agg_dir}/sat_aggs.nc")
+print('Saving satellite aggregate statistics locally')
+sat_aggs.to_netcdf(f"{agg_dir}/sat_aggs.nc")
 
-# upload to zarr store
-#SATELLITE_AGG_PATH = 'solar-pv-nowcasting-data/satellite/EUMETSAT/SEVIRI_RSS/OSGB36/aggregate'
-#SATELLITE_AGG_STORE = gcsfs.mapping.GCSMap(SATELLITE_AGG_PATH, gcs=GCP_FS, check=True, create=True)
-#sat_aggs.to_zarr(store=SATELLITE_AGG_STORE, consolidated=True)
+################################################################################
+# NWP aggrgate stats
+print('Starting NWP aggregate statistics')
 
-
-# ## NWP aggrgate stats
-# Note this is only calculated for 2019 for all the year
-
-NWP_ZARR_PATH1 = 'solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV_zarr/2019_1-6'
-NWP_STORE1 = gcsfs.mapping.GCSMap(NWP_ZARR_PATH1, gcs=GCP_FS, 
-                                       check=True, create=False)
-
-NWP_ZARR_PATH2 = 'solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV_zarr/2019_7-12'
-NWP_STORE2 = gcsfs.mapping.GCSMap(NWP_ZARR_PATH2, gcs=GCP_FS, 
-                                       check=True, create=False)
-
-nwp_ds1 = xr.open_zarr(store=NWP_STORE1, consolidated=True)
-nwp_ds2 = xr.open_zarr(store=NWP_STORE2, consolidated=True)
-nwp_ds = xr.concat([nwp_ds1, nwp_ds2], dim='time')
+# At time of last running this is over a 2 year period from Jan 2018 to Dec 2019
+all_nwp_channels = list(src.data.nwp_loader.AVAILABLE_CHANNELS.index)
+nwp_ds = src.data.nwp_loader.NWPLoader(channels=all_nwp_channels).dataset
 
 # Don't need 37 hours per 3-hourly forecast. Take every n-th forecast and m-th valid time
-nwp_time_message="""Dates from all 2019. Took one forecast every 9 hours and take forecast step every 2 hours"""
+nwp_time_message="""
+    Aggregate statistics (min,max, logmin etc) used for 
+    preprocessing calculated over date range 2018-01-01 : 2019-01-01. Samples 
+    are one forecast every 9 hours and take forecast step every 2 hours.
+"""
 
 nwp_sl_time = slice(None, None, 3)
 nwp_sl_step = slice(None, None, 2)
@@ -97,9 +101,17 @@ nwp_ds_filtered = nwp_ds.isel(time=nwp_sl_time, step=nwp_sl_step)
 
 nwp_aggs = aggregates(nwp_ds_filtered, dim=('x', 'y', 'time', 'step'))
 nwp_aggs.attrs['time-range'] = nwp_time_message
+
+print('Saving NWP aggregate statistics')
 nwp_aggs.to_netcdf(f"{agg_dir}/nwp_aggs.nc")
 
-# upload to zarr store
+################################################################################
+# Upload to zarr store
+
+SATELLITE_AGG_PATH = 'solar-pv-nowcasting-data/satellite/EUMETSAT/SEVIRI_RSS/OSGB36/aggregate'
+SATELLITE_AGG_STORE = gcsfs.mapping.GCSMap(SATELLITE_AGG_PATH, gcs=GCP_FS, check=True, create=True)
+sat_aggs.to_zarr(store=SATELLITE_AGG_STORE, consolidated=True)
+
 NWP_AGG_PATH = 'solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV_zarr/aggregate'
 NWP_AGG_STORE = gcsfs.mapping.GCSMap(NWP_AGG_PATH, gcs=GCP_FS, check=True, create=True)
 nwp_aggs.to_zarr(store=NWP_AGG_STORE, consolidated=True)
