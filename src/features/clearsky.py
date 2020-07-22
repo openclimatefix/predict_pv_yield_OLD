@@ -8,7 +8,6 @@ import numba as nb
 from pvlib import tools
 from pvlib.solarposition import _spa_python_import
 
-spa = _spa_python_import('numba')
 
 def haurwitz(apparent_zenith):
     """Caluclate global horizontal irradiance from apparent zenith angle of sun
