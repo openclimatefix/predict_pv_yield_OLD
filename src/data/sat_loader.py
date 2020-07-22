@@ -6,9 +6,6 @@ import pandas as pd
 import numpy as np
 
 import gcsfs
-
-from torch.utils.data import Dataset
-
 from . constants import GCP_FS
 
 SATELLITE_ZARR_PATH = 'solar-pv-nowcasting-data/satellite/EUMETSAT/SEVIRI_RSS/OSGB36/all_zarr'

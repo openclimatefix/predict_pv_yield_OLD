@@ -8,9 +8,6 @@ import pandas as pd
 import numpy as np
 
 import gcsfs
-
-from torch.utils.data import Dataset
-
 from . constants import GCP_FS
 
 NWP_ZARR_PATHS = ['solar-pv-nowcasting-data/NWP/UK_Met_Office/UKV_zarr/{}'.format(d) 
@@ -69,7 +66,7 @@ def xr_unique(ds):
     index = np.sort(np.unique(ds.time, return_index=True)[1])
     return ds.isel(time=index)
 
-class NWPLoader(Dataset):
+class NWPLoader:
     """
     Loader for UKV numerical weather prediction data. Used for easy and 
     efficient loading of NWP patches in time and space.
