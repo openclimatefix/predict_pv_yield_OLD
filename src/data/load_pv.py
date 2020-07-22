@@ -15,6 +15,20 @@ PV_METADATA_FILEPATH = 'PV/PVOutput.org/UK_PV_metadata.csv'
 
 
 def load_pv_metadata(filepath=None):
+    """Loads the PV metadata from local storage and adds columns 'x' and  'y' 
+    for the system location in the coordinate system used by the NWP and 
+    satellite data.
+    
+    Parameters
+    ----------
+    filepath : str, optional
+        Location of the PV metadata on the local system. Defaults to file which
+        should be downloaded during setup.
+    
+    Returns
+    -------
+    pandas.DataFrame of dimension (system_id, metadata_features)
+    """
     if filepath is None:
         filepath = os.path.join(LOCAL_DATA_DIRECTORY, PV_METADATA_FILEPATH)
         
@@ -28,7 +42,7 @@ def load_pv_metadata(filepath=None):
         xs=pv_metadata['longitude'].values,
         ys=pv_metadata['latitude'].values)
 
-    # Filter 3 PV systems which apparently aren't in the UK!
+    # Filter PV systems which apparently aren't in the UK
     pv_metadata = pv_metadata[
         (pv_metadata.x >= WEST) &
         (pv_metadata.x <= EAST) &
@@ -40,6 +54,23 @@ def load_pv_metadata(filepath=None):
     return pv_metadata
 
 def load_pv_power(filepath=None, start='2010-12-15', end='2019-08-20'):
+    """Loads the PV power output data from local netcdf storage for a given time
+    period.
+    
+    Parameters
+    ----------
+    filepath : str, optional
+        Location of the PV power data on the local system. Defaults to file 
+        which should be downloaded during setup.
+    start : str in format 'YYYY-MM-DD', optional
+        First date to load the PV data from. Defaults to first date available.
+    end : str in format 'YYYY-MM-DD', optional
+        Last date to load the PV data from. Defaults to last date available.
+    
+    Returns
+    -------
+    pandas.DataFrame of dimension (time, system_id)
+    """
     if filepath is None:
         filepath = os.path.join(LOCAL_DATA_DIRECTORY, PV_DATA_FILEPATH)
         
