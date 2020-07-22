@@ -5,11 +5,17 @@ import numpy as np
 import rasterio.warp as rasteriowarp
 
 import os
+from pathlib import Path
 
 # Coordinate system of the SEVIRI OSGB36 reprojected & UKV data
 from . constants import DST_CRS, NORTH, SOUTH, EAST, WEST
 
-LOCAL_DATA_DIRECTORY = os.path.expanduser('~/OCFdata')
+# Path of this submodule 
+module_path = Path(os.path.dirname(os.path.abspath(__file__)))
+# Path where setup downloads local data to
+LOCAL_DATA_DIRECTORY = os.path.join(path.parent.parent, 'data')
+
+
 PV_DATA_FILEPATH = 'PV/PVOutput.org/UK_PV_timeseries_batch.nc'
 PV_METADATA_FILEPATH = 'PV/PVOutput.org/UK_PV_metadata.csv'
 
@@ -33,6 +39,8 @@ def load_pv_metadata(filepath=None):
         filepath = os.path.join(LOCAL_DATA_DIRECTORY, PV_METADATA_FILEPATH)
         
     pv_metadata = pd.read_csv(filepath, index_col='system_id')
+    
+    # drop systems without location information
     pv_metadata.dropna(subset=['longitude', 'latitude'], how='any', inplace=True)
 
     # Convert lat lons to Transverse Mercator
@@ -88,6 +96,5 @@ def load_pv_power(filepath=None, start='2010-12-15', end='2019-08-20'):
     return pv_power_df
 
 if __name__=='__main__':
-    pv_output = load_pv_power("~/repos/predict_pv_yield/data/"+PV_DATA_FILEPATH, 
-                              start='2018-01-01', end='2019-12-31')
-    pv_metadata = load_pv_metadata("~/repos/predict_pv_yield/data/"+PV_METADATA_FILEPATH)
+    pv_output = load_pv_power(start='2018-01-01', end='2019-12-31')
+    pv_metadata = load_pv_metadata()
