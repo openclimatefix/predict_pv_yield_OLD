@@ -107,7 +107,7 @@ class RobustMinMaxScaler(MinMaxScaler):
         Xt : array-like of shape (n_samples, n_features)
             Transformed data.
         """
-        Xt = super().inverse_transform(Xr)
+        Xt = super().inverse_transform(X)
         if isinstance(X, pd.DataFrame):
             Xt = pd.DataFrame(Xt, columns = X.columns, index=X.index)
         return Xt

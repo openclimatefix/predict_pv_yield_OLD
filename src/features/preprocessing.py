@@ -28,7 +28,7 @@ def train_test_split_day(pv_output, test_size, shuffle=True, seed=None):
     if test_size<0:
         raise ValueError("test_size can't be negative")
         
-    days = np.unique(pv_power_df.index.date)
+    days = np.unique(pv_output.index.date)
     if shuffle:
         if seed is not None:
             np.random.seed(seed)
@@ -41,7 +41,7 @@ def train_test_split_day(pv_output, test_size, shuffle=True, seed=None):
             test_size = int(len(days)*test_size)
     
     n = len(days)-test_size
-    train_bool = np.isin(pv_power_df.index.date, days[:n])
-    test_bool = np.isin(pv_power_df.index.date, days[n:])
+    train_bool = np.isin(pv_output.index.date, days[:n])
+    test_bool = np.isin(pv_output.index.date, days[n:])
     
     return pv_output.loc[train_bool], pv_output.loc[test_bool]
