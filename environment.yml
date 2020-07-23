@@ -1,20 +1,26 @@
-name: sat_image_processing
+name: predict_pv_yield
 channels:
-  - conda-forge
   - pytorch
+  - numba
+  - pvlib
+  - conda-forge
+  - defaults
 dependencies:
   - python>=3.7
-  - pytest
-  - pytables
-  - pandas
-  - matplotlib
   - jupyterlab
-  - ipympl  # jupyter-matplotlib
-  - nodejs
   - xarray
-  - cartopy
-  - rasterio
-  - pytorch
-  - scikit-learn
-  - netcdf4 # required for loading NetCDF4 files!
   - dask
+  - zarr
+  - cfgrib
+  - netcdf4
+  - scikit-learn
+  - numba
+  - gcsfs
+  - cartopy
+  - seaborn
+  - rasterio
+  - pvlib
+  - pytorch
+  - pytest
+  - pathlib
+  - gsutil

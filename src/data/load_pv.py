@@ -11,9 +11,9 @@ from pathlib import Path
 from . constants import DST_CRS, NORTH, SOUTH, EAST, WEST
 
 # Path of this submodule 
-module_path = Path(os.path.dirname(os.path.abspath(__file__)))
+submodule_path = Path(os.path.dirname(os.path.abspath(__file__)))
 # Path where setup downloads local data to
-LOCAL_DATA_DIRECTORY = os.path.join(path.parent.parent, 'data')
+LOCAL_DATA_DIRECTORY = os.path.join(submodule_path.parent.parent, 'data')
 
 
 PV_DATA_FILEPATH = 'PV/PVOutput.org/UK_PV_timeseries_batch.nc'
