@@ -138,7 +138,6 @@ class NWPLoader:
         self.channels = channels
         drop_variables = set(AVAILABLE_CHANNELS.index) - set(channels)
         if store=='all':
-            NWP_STORES
             self.dataset = xr.concat([xr_unique(xr.open_zarr(store=s,  
                                     drop_variables=drop_variables,
                                     consolidated=True)) for s in NWP_STORES], dim='time')[channels]

@@ -84,6 +84,10 @@ sat_aggs.to_netcdf(f"{agg_dir}/sat_aggs.nc")
 print('Starting NWP aggregate statistics')
 
 # At time of last running this is over a 2 year period from Jan 2018 to Dec 2019
+def xr_unique(ds):
+    index = np.sort(np.unique(ds.time, return_index=True)[1])
+    return ds.isel(time=index)
+
 nwp_ds = xr.concat(
     [
         xr_unique(xr.open_zarr(store=s,  consolidated=True)) 
