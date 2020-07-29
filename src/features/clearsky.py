@@ -5,8 +5,10 @@ import numpy as np
 import pandas as pd
 import numba as nb
 
+import pvlib
 from pvlib import tools
 from pvlib.solarposition import _spa_python_import
+from pvlib.location import Location
 
 spa = _spa_python_import('numba')
 
@@ -245,11 +247,14 @@ def compute_clearsky(times, latitudes, longitudes):
                        fill_value=np.NaN, dtype=np.float32)
 
     
-    for i, (lat, lon) in enumerate(zip(lat, lon)):
-        loc = Location(
+    for i, (lat, lon) in enumerate(zip(latitudes, longitudes)):
+        clearsky_for_location = (
+            Location(
                 latitude=lat,
                 longitude=lon,
-                tz='UTC').get_clearsky(times)
+                tz='UTC'
+            ).get_clearsky(times)
+        )
         clearsky[:,i,:] = clearsky_for_location.values    
     
     return clearsky

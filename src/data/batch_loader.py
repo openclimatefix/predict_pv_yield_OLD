@@ -10,9 +10,6 @@ import torch
 import copy
 from sklearn.utils import shuffle
 
-import pvlib
-from pvlib.location import Location
-
 import threading
 from multiprocessing import Value
 import warnings
@@ -52,7 +49,7 @@ def _data_source_intersection(pv_power_df, clearsky=None,
     valid_x = np.ones(valid_y_times.shape, dtype=bool)
     
     if clearsky is not None:
-        valid = np.in1d(clearsky.index.values, valid_y_times)
+        valid = np.in1d(valid_y_times, clearsky.index.values)
         valid_x = valid_x & valid
     
     if sat_loader is not None:
@@ -63,8 +60,6 @@ def _data_source_intersection(pv_power_df, clearsky=None,
                                 (pd.Timedelta(f'{-i*5+1}min') + lead_time))
             valid = np.in1d(valid_y_times, available_sat_prediction_times)
             valid_x = valid_x & valid
-            
-            
         
     if nwp_loader is not None:
         nwp_times = nwp_loader.dataset.time.values
@@ -279,12 +274,18 @@ class cross_processor_batch:
         
         # remove UTC timezone info
         y.index = y.index.values
-        y_index_sequence =np.array(y_index_sequence)
+        y_index_sequence = np.array(y_index_sequence)
         
         # fill to regular time spacing (important for selecting sequences)
         if len(y_index_sequence)>1:
-            y = y.reindex(pd.date_range(y.index.min(), y.index.max(), freq='5min'), 
-                          fill_value=np.nan)
+            y = y.reindex(
+                      index=pd.date_range(y.index.min(), y.index.max(), freq='5min'), 
+                      fill_value=np.nan, copy=False
+            )
+            if clearsky is not None:
+                clearsky = clearsky.reindex(index=y.index,
+                          fill_value=np.nan, copy=False
+                )
         
         
         # check which datetimes have x-data available
@@ -300,15 +301,13 @@ class cross_processor_batch:
         # store datasets
         self.y = y.astype(np.float32)
         self.datetime = y.index
-        self.y_meta = y_meta.reindex(y.columns)
+        self.y_meta = y_meta.reindex(index=y.columns, copy=False)
         self.y_index_sequence = y_index_sequence
         self.max_missing_sequence_vals = max_missing_sequence_vals
         if clearsky is None:
             self.clearsky = None
         else:
-            self.clearsky = clearsky.reindex(self.datetime, 
-                                             fill_value=np.nan
-                                            ).astype(np.float32)
+            self.clearsky = clearsky.astype(np.float32)
         
         # store loaders
         self.sat_loader = sat_loader
