@@ -104,10 +104,10 @@ class RobustMinMaxScaler(MinMaxScaler):
             
         Returns
         -------
-        Xt : array-like of shape (n_samples, n_features)
+        array-like of shape (n_samples, n_features)
             Transformed data.
         """
-        Xt = super().inverse_transform(Xr)
+        Xt = super().inverse_transform(X)
         if isinstance(X, pd.DataFrame):
             Xt = pd.DataFrame(Xt, columns = X.columns, index=X.index)
         return Xt
@@ -117,12 +117,16 @@ class RobustMinMaxScaler(MinMaxScaler):
         return self.transform(X)
     
 
-class ClearskyScalar(TransformerMixin):
-    """Transform PV data by normalising with respect to the Global Horizontal 
-    Irradience (GHI).
-
-    Each PV measurement is scaled by the calculated GHI at the appropriate time
-    and location.
+class ClearskyScalar:
+    """Transform PV data with respect to the Global Horizontal Irradience (GHI).
+    
+    Can be used to 
+        - Filter data to daylight hours, where this is calculated based on the 
+          datetime and lat-lon of the PV system. See filter_to_daylight.
+        - To normalise the PV data with respect to the GHI. See 
+          (inverse_)transform.
+        - As a general purpose way to calculate GHI on a regular location, time
+          grid. See haurwitz_ghi.
     
     Parameters
     ----------
@@ -133,9 +137,9 @@ class ClearskyScalar(TransformerMixin):
         Longitudes in decimal degrees. Positive east of prime meridian,
         negative to west.
     g0 : float, optional
-        A fudge factor added to each calculated GHI to avoid dividing by zero.
-        Default is 0 so zero-division may present an error and these values will
-        returned as NaN.
+        A fudge factor added to each calculated GHI to avoid dividing by zero in 
+        transform. Default is 0 so zero-division may present an error and these 
+        values will returned as NaN.
     
     See also
     --------
@@ -153,6 +157,19 @@ class ClearskyScalar(TransformerMixin):
         self.g0 = g0
         
     def haurwitz_ghi(self, times):
+        """Calculate the fudged GHI at the instantiated lat-lon positions and at
+        given times.
+        
+        Parameters
+        ----------
+        times : pandas.DatetimeIndex
+            
+        Returns
+        -------
+        numpy.ndarray
+            The GHI plus the initiated fudge factor g0. Dimensions of returned 
+            are (times, location).
+        """
         apparent_zenith = spa_python(times, self.lats, self.lons, numthreads=3)
         return haurwitz(apparent_zenith) + self.g0
 
@@ -167,8 +184,7 @@ class ClearskyScalar(TransformerMixin):
             
         Returns
         -------
-        Xt : pandas.DataFrame of shape (n_samples, n_features)
-            Transformed data.
+        pandas.DataFrame of shape (n_samples, n_features)
         '''
         assert len(self.lats)==X.shape[1]
         GHI = self.haurwitz_ghi(X.index)
@@ -186,8 +202,7 @@ class ClearskyScalar(TransformerMixin):
             
         Returns
         -------
-        Xt : pandas.DataFrame of shape (n_samples, n_features)
-            Transformed data.
+        pandas.DataFrame of shape (n_samples, n_features)
         '''        
         assert len(self.lats)==X.shape[1]
         GHI = self.haurwitz_ghi(X.index)
@@ -206,12 +221,11 @@ class ClearskyScalar(TransformerMixin):
             The minimum threshold of (non-fudged) GHI used to separate daylight 
             from non-daylight and thus to filter to.
         inplace : bool, default False
-        Whether to perform the operation in place on the data.
+            Whether to perform the operation in place on the data.
             
         Returns
         -------
-        Xt : pandas.DataFrame of shape (n_samples, n_features)
-            Transformed data.
+        pandas.DataFrame of shape (n_samples, n_features)
         '''        
         assert len(self.lats)==X.shape[1]
         GHI = self.haurwitz_ghi(X.index)
