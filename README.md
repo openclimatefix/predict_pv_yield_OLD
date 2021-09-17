@@ -1,4 +1,7 @@
-# Predict PV Yield
+# Predict PV Yield OLD
+
+This repo is no longer maintained :)  Please see the new [predict_pv_yield](https://github.com/openclimatefix/predict_pv_yield) repo!
+
 The repo represents a significant line of experimentation on training neural networks to predict PV power output using a hybrid of numerical weather predictions (NWP) and satellite data.
 
 Contained in the `src` directory is a library for loading PV power output, satellite images and numerical weather predictions into sensible batches. These are streamed from the OCF google cloud bucket which is not publically available. Effort has gone into making this method of streaming from cloud buckets fast (or at least useably fast).
